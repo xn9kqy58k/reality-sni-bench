@@ -12,7 +12,6 @@ TOP_N=10
 STRICT_TLS13=0
 MODE="both"
 GEO_AWARE=1
-CN_SAFE=1
 CN_DNS_CHECK=1
 MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
@@ -44,8 +43,6 @@ Options:
   -m MODE    Address family: both, ipv4, or ipv6. Default: both
   --strict   Keep only domains that pass TLS 1.3 + certificate verification.
   --no-geo   Disable source/edge IP region and ASN scoring bonus.
-  --include-risky
-             Include domains that are commonly blocked or unstable in mainland China.
   --no-cn-dns-check
              Disable mainland public DNS precheck.
   -h         Show help.
@@ -509,7 +506,6 @@ while [[ $# -gt 0 ]]; do
     --strict) STRICT_TLS13=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
-    --include-risky) CN_SAFE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     --version) echo "$VERSION"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -546,8 +542,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   d=$(trim_domain "$line")
   if [[ -n "$d" ]]; then
     if is_domain "$d"; then
-      if [[ $CN_SAFE -eq 1 ]] && is_cn_risky_domain "$d"; then
-        log "Skip CN-risky domain: $d"
+      if is_cn_risky_domain "$d"; then
+        log "Drop CN-unusable domain: $d"
         continue
       fi
       note=$(candidate_note "$line")
@@ -601,7 +597,7 @@ for domain in "${DOMAINS[@]}"; do
       elif [[ $cn_dns_ok -ge 1 ]]; then
         cn_dns_bonus=2
       fi
-      if [[ $CN_SAFE -eq 1 && $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
+      if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
         log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
         continue
       fi

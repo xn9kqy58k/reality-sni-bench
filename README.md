@@ -44,7 +44,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 - `--no-strict`：不强制 TLS 1.3 + 证书校验通过
 - `--no-geo`：关闭本机出口和候选边缘 IP 的地区/ASN 加权
 - `--no-cn-dns-check`：关闭国内公共 DNS 预检查
-- `--include-risky`：包含大陆常见不可达或不稳定域名，默认关闭
 - `--install-dir /opt/reality-sni-bench`：指定安装目录
 
 也可以用管道形式：
@@ -75,7 +74,7 @@ chmod +x reality-sni-bench.sh
 脚本分三层优选：
 
 1. 候选池预筛：默认池优先放大厂 CDN、云边缘、静态资源、软件分发、更新服务和数据中心入口，避免泛泛的 `www` 首页域名。
-2. 大陆可达预筛：默认排除 Google、Meta、X、Discord、Docker、GitHub object/raw、npm、部分 Microsoft auth CDN 等大陆常见不可达或不稳定域名。需要全量测试时手动加 `--include-risky`。
+2. 大陆可达预筛：默认删除 Google、Meta、X、Discord、Docker、GitHub object/raw、npm、部分 Microsoft auth CDN 等大陆常见不可达或不稳定域名。一键脚本会清理旧 `candidates.txt`，主测试脚本也会把手动塞进去的同类域名直接丢弃。
 3. 国内 DNS 预检查：默认用阿里 DNS、DNSPod、百度 DNS、114 DNS 做 A/AAAA 解析预检。国内公共 DNS 都解析不到的候选不进榜，避免 VPS 自己能连但国内客户端明显不合适。
 4. 硬指标筛选：Reality 的 SNI 必须像正常 HTTPS 站点，所以先看 TLS 1.3、证书链/主机名校验、HTTPS 成功率、ALPN、握手耗时和 DNS 发散程度。`200/204/30x` 比 `401/403/404` 更优，`400` 这类认证接口根路径不再高分。
 5. 地域/ASN 加权：脚本会检测 VPS 本机出口 IP，再对候选实际连接到的 `remote_ip` 做地理和 ASN 查询。优先级是同 ASN/同机房网络 > 同城市 > 同区域 > 同国家。结果会写入 `geo_bonus` 和 `geo_match`。
