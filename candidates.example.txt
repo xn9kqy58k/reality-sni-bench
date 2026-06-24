@@ -1,0 +1,14 @@
+# Put your own candidate domains here, one per line.
+# Keep the list modest and relevant to your VPS region/network.
+# The script only performs normal HTTPS/TLS handshakes.
+
+www.cloudflare.com
+www.microsoft.com
+www.apple.com
+www.mozilla.org
+www.github.com
+www.wikipedia.org
+www.bing.com
+www.ubuntu.com
+www.debian.org
+www.akamai.com
