@@ -13,8 +13,11 @@ STRICT_TLS13=0
 MODE="both"
 GEO_AWARE=1
 CN_SAFE=1
+CN_DNS_CHECK=1
+MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
+CN_DNS_RESOLVERS=("223.5.5.5" "119.29.29.29" "180.76.76.76" "114.114.114.114")
 
 declare -A SOURCE_IPS=()
 declare -A SOURCE_COUNTRIES=()
@@ -43,6 +46,8 @@ Options:
   --no-geo   Disable source/edge IP region and ASN scoring bonus.
   --include-risky
              Include domains that are commonly blocked or unstable in mainland China.
+  --no-cn-dns-check
+             Disable mainland public DNS precheck.
   -h         Show help.
 
 Examples:
@@ -139,6 +144,55 @@ resolve_ips() {
   fi
 
   printf '%s' "$ips"
+}
+
+is_valid_public_ip() {
+  local ip=$1
+  if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    case "$ip" in
+      0.*|10.*|127.*|169.254.*|172.16.*|172.17.*|172.18.*|172.19.*|172.2[0-9].*|172.30.*|172.31.*|192.168.*|224.*|240.*)
+        return 1
+        ;;
+    esac
+    return 0
+  fi
+
+  if [[ "$ip" =~ : ]]; then
+    case "${ip,,}" in
+      ::1|fe80:*|fc*|fd*)
+        return 1
+        ;;
+    esac
+    return 0
+  fi
+
+  return 1
+}
+
+cn_dns_probe() {
+  local domain=$1
+  local family=$2
+  local qtype="A"
+  local resolver answer ok=0 total=0
+
+  [[ "$family" == "ipv6" ]] && qtype="AAAA"
+
+  if [[ $CN_DNS_CHECK -ne 1 ]] || ! has_cmd dig; then
+    printf 'skip\tcn-dns skipped\n'
+    return 0
+  fi
+
+  for resolver in "${CN_DNS_RESOLVERS[@]}"; do
+    total=$((total + 1))
+    while IFS= read -r answer; do
+      if is_valid_public_ip "$answer"; then
+        ok=$((ok + 1))
+        break
+      fi
+    done < <(dig @"$resolver" +short "$qtype" "$domain" +time=2 +tries=1 2>/dev/null | grep -E '^[0-9a-fA-F:.]+$' || true)
+  done
+
+  printf '%s/%s\tcn-dns %s/%s\n' "$ok" "$total" "$ok" "$total"
 }
 
 openssl_probe() {
@@ -241,12 +295,12 @@ score_domain() {
   local verify_ok=$5
   local h2=$6
   local http11=$7
-  local http_good=$8
+  local http_score=$8
   local ip_count=$9
 
   awk -v success="$success" -v rounds="$rounds" -v avg="$avg_ms" \
       -v tls13="$tls13" -v verify="$verify_ok" -v h2="$h2" -v http11="$http11" \
-      -v httpgood="$http_good" -v ipcount="$ip_count" '
+      -v httpscore="$http_score" -v ipcount="$ip_count" '
     BEGIN {
       score = 0
       if (rounds > 0) score += (success / rounds) * 25
@@ -254,7 +308,7 @@ score_domain() {
       if (verify == 1) score += 22
       if (h2 == 1) score += 10
       else if (http11 == 1) score += 4
-      if (httpgood == 1) score += 8
+      score += httpscore
       if (ipcount >= 1 && ipcount <= 8) score += 5
       else if (ipcount > 8 && ipcount <= 32) score += 2
 
@@ -454,6 +508,7 @@ while [[ $# -gt 0 ]]; do
     -m) MODE=${2:?}; shift 2 ;;
     --strict) STRICT_TLS13=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
+    --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
     --include-risky) CN_SAFE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     --version) echo "$VERSION"; exit 0 ;;
@@ -482,7 +537,7 @@ fi
 TMP_CSV=$(mktemp)
 trap 'rm -f "$TMP_CSV"' EXIT
 
-printf 'rank,family,domain,score,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips,geo_bonus,geo_match,note\n' >"$TMP_CSV"
+printf 'rank,family,domain,score,decision,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips,cn_dns,cn_dns_bonus,geo_bonus,geo_match,reason,note\n' >"$TMP_CSV"
 
 declare -A DOMAIN_SEEN=()
 declare -A DOMAIN_NOTES=()
@@ -536,10 +591,26 @@ for domain in "${DOMAINS[@]}"; do
     ip_count=0
     [[ -n "$ips" ]] && ip_count=$(awk -F'|' '{print NF}' <<<"$ips")
 
+    IFS=$'\t' read -r cn_dns cn_dns_note < <(cn_dns_probe "$domain" "$family")
+    cn_dns_ok=0
+    cn_dns_bonus=0
+    if [[ "$cn_dns" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+      cn_dns_ok=${BASH_REMATCH[1]}
+      if [[ $cn_dns_ok -ge 3 ]]; then
+        cn_dns_bonus=5
+      elif [[ $cn_dns_ok -ge 1 ]]; then
+        cn_dns_bonus=2
+      fi
+      if [[ $CN_SAFE -eq 1 && $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
+        log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
+        continue
+      fi
+    fi
+
     IFS=',' read -r tls13 verify_ok h2 http11 protocol alpn < <(openssl_probe "$domain" "$family")
 
     success=0
-    http_good=0
+    http_score=0
     total_appconnect=0
     last_code=0
     last_ip=""
@@ -553,8 +624,10 @@ for domain in "${DOMAINS[@]}"; do
         success=$((success + 1))
         app_ms=$(awk -v t="$appconnect" 'BEGIN { printf "%.0f", t * 1000 }')
         total_appconnect=$(awk -v a="$total_appconnect" -v b="$app_ms" 'BEGIN { printf "%.0f", a + b }')
-        if [[ "$code" =~ ^(200|204|301|302|307|308|401|403|404)$ ]]; then
-          http_good=1
+        if [[ "$code" =~ ^(200|204|301|302|307|308)$ ]]; then
+          [[ $http_score -lt 8 ]] && http_score=8
+        elif [[ "$code" =~ ^(401|403|404)$ ]]; then
+          [[ $http_score -lt 4 ]] && http_score=4
         fi
       fi
     done
@@ -569,20 +642,46 @@ for domain in "${DOMAINS[@]}"; do
     if [[ $STRICT_TLS13 -eq 1 && ( $tls13 -ne 1 || $verify_ok -ne 1 ) ]]; then
       score="0.0"
     else
-      base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_good" "$ip_count")
-      score=$(apply_geo_bonus "$base_score" "$geo_bonus")
+      base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_score" "$ip_count")
+      score=$(apply_geo_bonus "$base_score" "$((geo_bonus + cn_dns_bonus))")
     fi
+
+    decision="AVOID"
+    reason_parts=()
+    if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 95) }' \
+      && [[ $success -eq $ROUNDS && $tls13 -eq 1 && $verify_ok -eq 1 && $http_score -ge 4 ]]; then
+      decision="PRIMARY"
+    elif [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 85) }' \
+      && [[ $success -gt 0 && $tls13 -eq 1 && $verify_ok -eq 1 ]]; then
+      decision="BACKUP"
+    fi
+
+    [[ $cn_dns_bonus -gt 0 ]] && reason_parts+=("$cn_dns_note")
+    [[ -n "$geo_match" ]] && reason_parts+=("$geo_match")
+    if [[ $http_score -eq 8 ]]; then
+      reason_parts+=("good HTTP $last_code")
+    elif [[ $http_score -eq 4 ]]; then
+      reason_parts+=("acceptable HTTP $last_code")
+    else
+      reason_parts+=("weak HTTP $last_code")
+    fi
+    reason=$(IFS='; '; printf '%s' "${reason_parts[*]}")
 
     {
       printf '0,%s,' "$family"
       csv_escape "$domain"; printf ','
-      printf '%s,%s,%s,%s,%s,%s,' "$score" "$avg_ms" "$success" "$ROUNDS" "$tls13" "$verify_ok"
+      printf '%s,' "$score"
+      csv_escape "$decision"; printf ','
+      printf '%s,%s,%s,%s,%s,' "$avg_ms" "$success" "$ROUNDS" "$tls13" "$verify_ok"
       csv_escape "$alpn"; printf ','
       printf '%s,' "$last_code"
       csv_escape "$last_ip"; printf ','
       csv_escape "$ips"; printf ','
+      csv_escape "$cn_dns"; printf ','
+      printf '%s,' "$cn_dns_bonus"
       printf '%s,' "$geo_bonus"
       csv_escape "$geo_match"; printf ','
+      csv_escape "$reason"; printf ','
       csv_escape "${DOMAIN_NOTES[$domain]:-}"; printf '\n'
     } >>"$TMP_CSV"
   done
@@ -590,11 +689,11 @@ done
 
 {
   head -n 1 "$TMP_CSV"
-  tail -n +2 "$TMP_CSV" | sort -t',' -k4,4nr -k14,14nr -k5,5n | awk -F',' 'BEGIN { OFS="," } { $1=NR; print }'
+  tail -n +2 "$TMP_CSV" | sort -t',' -k4,4nr -k16,16nr -k17,17nr -k6,6n | awk -F',' 'BEGIN { OFS="," } { $1=NR; print }'
 } >"$OUT_CSV"
 
-best_ipv4=$(awk -F',' '$2=="ipv4" && $4+0 > 0 { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
-best_ipv6=$(awk -F',' '$2=="ipv6" && $4+0 > 0 { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
+best_ipv4=$(awk -F',' '$2=="ipv4" && $4+0 > 0 && $5!="\"AVOID\"" { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
+best_ipv6=$(awk -F',' '$2=="ipv6" && $4+0 > 0 && $5!="\"AVOID\"" { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
 snippet_ipv4=${best_ipv4:-REPLACE_WITH_BEST_IPV4_SNI}
 snippet_ipv6=${best_ipv6:-REPLACE_WITH_BEST_IPV6_SNI}
 
@@ -648,17 +747,19 @@ echo
 echo "Top ${TOP_N}:"
 awk -F',' 'NR==1 { next } NR<=n+1 {
   gsub(/^"|"$/, "", $3)
-  gsub(/^"|"$/, "", $10)
-  geo=$15
-  note=$16
-  gsub(/^"|"$/, "", geo)
+  decision=$5
+  gsub(/^"|"$/, "", decision)
+  alpn=$11
+  gsub(/^"|"$/, "", alpn)
+  cn=$15
+  geo_bonus=$17
+  reason=$19
+  note=$20
+  gsub(/^"|"$/, "", cn)
+  gsub(/^"|"$/, "", reason)
   gsub(/^"|"$/, "", note)
   suffix=""
-  if (geo != "") suffix = suffix " geo=" geo
+  if (reason != "") suffix = suffix " " reason
   if (note != "") suffix = suffix " # " note
-  if (suffix != "") {
-    printf "%2s  %-5s %-36s score=%5s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s%s\n", $1, $2, $3, $4, $14, $5, $6, $7, $10, $11, suffix
-  } else {
-    printf "%2s  %-5s %-36s score=%5s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s\n", $1, $2, $3, $4, $14, $5, $6, $7, $10, $11
-  }
+  printf "%2s  %-7s %-5s %-36s score=%5s cn=%s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s%s\n", $1, decision, $2, $3, $4, cn, geo_bonus, $6, $7, $8, alpn, $12, suffix
 }' n="$TOP_N" "$OUT_CSV"

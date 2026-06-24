@@ -12,6 +12,7 @@ TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
 GEO_AWARE="${GEO_AWARE:-1}"
 INCLUDE_RISKY="${INCLUDE_RISKY:-0}"
+CN_DNS_CHECK="${CN_DNS_CHECK:-1}"
 SKIP_INSTALL=0
 ASSUME_YES=0
 INTERACTIVE=0
@@ -36,6 +37,7 @@ Options:
   -n, --top NUM            print top N results, default: 10
   --no-strict              do not require TLS 1.3 + certificate verification
   --no-geo                 disable source/edge IP region and ASN scoring bonus
+  --no-cn-dns-check        disable mainland public DNS precheck
   --include-risky          include domains commonly blocked or unstable in mainland China
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory
@@ -308,6 +310,7 @@ run_bench() {
   local strict_arg=()
   local geo_arg=()
   local risky_arg=()
+  local cn_dns_arg=()
   if [[ "$STRICT" =~ ^(1|true|yes|y)$ ]]; then
     strict_arg=(--strict)
   fi
@@ -316,6 +319,9 @@ run_bench() {
   fi
   if [[ "$INCLUDE_RISKY" =~ ^(1|true|yes|y)$ ]]; then
     risky_arg=(--include-risky)
+  fi
+  if [[ ! "$CN_DNS_CHECK" =~ ^(1|true|yes|y)$ ]]; then
+    cn_dns_arg=(--no-cn-dns-check)
   fi
 
   log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS"
@@ -328,7 +334,8 @@ run_bench() {
     -n "$TOP_N" \
     "${strict_arg[@]}" \
     "${geo_arg[@]}" \
-    "${risky_arg[@]}"
+    "${risky_arg[@]}" \
+    "${cn_dns_arg[@]}"
 
   echo
   echo "Done."
@@ -349,6 +356,7 @@ while [[ $# -gt 0 ]]; do
     -n|--top) TOP_N=${2:?}; shift 2 ;;
     --no-strict) STRICT=0; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
+    --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
     --include-risky) INCLUDE_RISKY=1; shift ;;
     --no-install) SKIP_INSTALL=1; shift ;;
     --install-dir) INSTALL_DIR=${2:?}; shift 2 ;;
