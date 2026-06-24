@@ -4,14 +4,16 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/xn9kqy58k/reality-sni-bench.git}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main}"
 INSTALL_DIR="${INSTALL_DIR:-}"
-MODE="${MODE:-}"
-ROUNDS="${ROUNDS:-5}"
+MODE="${MODE:-both}"
+ROUNDS="${ROUNDS:-3}"
 TIMEOUT="${TIMEOUT:-8}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-4}"
 TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
 SKIP_INSTALL=0
 ASSUME_YES=0
+INTERACTIVE=0
+CUSTOM_DOMAINS=()
 
 usage() {
   cat <<'EOF'
@@ -22,20 +24,27 @@ Usage:
 
 Options:
   -m, --mode MODE          both, ipv4, or ipv6
-  -r, --rounds NUM         test rounds per domain, default: 5
+  -4, --ipv4               test IPv4 only
+  -6, --ipv6               test IPv6 only
+  --dual, --both           test IPv4 + IPv6, default
+  --add DOMAIN             append one candidate SNI domain before testing
+  -r, --rounds NUM         test rounds per domain, default: 3
   -t, --timeout SEC        total timeout per probe, default: 8
   -c, --connect-timeout S  curl connect timeout, default: 4
   -n, --top NUM            print top N results, default: 10
   --no-strict              do not require TLS 1.3 + certificate verification
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory
-  -y, --yes                non-interactive defaults
+  --interactive            ask for custom domains and mode
+  -y, --yes                non-interactive defaults, kept for compatibility
   -h, --help               show help
 
 Examples:
   bash oneclick.sh
-  bash oneclick.sh --mode ipv4 --rounds 5
-  MODE=ipv6 ROUNDS=5 bash oneclick.sh --yes
+  bash oneclick.sh --ipv4
+  bash oneclick.sh --ipv6 --rounds 5
+  bash oneclick.sh --add www.cloudflare.com --add www.microsoft.com
+  MODE=ipv6 ROUNDS=5 bash oneclick.sh
 EOF
 }
 
@@ -149,7 +158,16 @@ ensure_candidates() {
     log "Created candidates.txt from candidates.example.txt"
   fi
 
-  if [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
+  if [[ ${#CUSTOM_DOMAINS[@]} -gt 0 ]]; then
+    local domain
+    for domain in "${CUSTOM_DOMAINS[@]}"; do
+      printf '%s\n' "$domain" >> candidates.txt
+    done
+    sort -u candidates.txt -o candidates.txt
+    log "Added ${#CUSTOM_DOMAINS[@]} custom candidate domain(s)"
+  fi
+
+  if [[ $INTERACTIVE -eq 1 && $ASSUME_YES -eq 0 && -t 0 ]]; then
     printf 'Append custom candidate SNI domains now? [y/N]: '
     read -r answer || true
     case "${answer,,}" in
@@ -166,13 +184,9 @@ ensure_candidates() {
 }
 
 select_mode() {
-  if [[ -n "$MODE" ]]; then
-    MODE=$(normalize_mode "$MODE") || die "Invalid mode: $MODE"
-    return 0
-  fi
+  MODE=$(normalize_mode "$MODE") || die "Invalid mode: $MODE"
 
-  if [[ $ASSUME_YES -eq 1 || ! -t 0 ]]; then
-    MODE="both"
+  if [[ $INTERACTIVE -eq 0 || $ASSUME_YES -eq 1 || ! -t 0 ]]; then
     return 0
   fi
 
@@ -190,7 +204,7 @@ EOF
 }
 
 prompt_numbers() {
-  [[ $ASSUME_YES -eq 1 || ! -t 0 ]] && return 0
+  [[ $INTERACTIVE -eq 0 || $ASSUME_YES -eq 1 || ! -t 0 ]] && return 0
 
   printf 'Rounds per domain [%s]: ' "$ROUNDS"
   read -r answer || true
@@ -235,6 +249,10 @@ run_bench() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--mode) MODE=${2:?}; shift 2 ;;
+    -4|--ipv4) MODE=ipv4; shift ;;
+    -6|--ipv6) MODE=ipv6; shift ;;
+    --dual|--both) MODE=both; shift ;;
+    --add) CUSTOM_DOMAINS+=("${2:?}"); shift 2 ;;
     -r|--rounds) ROUNDS=${2:?}; shift 2 ;;
     -t|--timeout) TIMEOUT=${2:?}; shift 2 ;;
     -c|--connect-timeout) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
@@ -242,6 +260,7 @@ while [[ $# -gt 0 ]]; do
     --no-strict) STRICT=0; shift ;;
     --no-install) SKIP_INSTALL=1; shift ;;
     --install-dir) INSTALL_DIR=${2:?}; shift 2 ;;
+    --interactive) INTERACTIVE=1; shift ;;
     -y|--yes) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown option: $1" ;;
