@@ -1,8 +1,9 @@
 # Candidate SNI domains. One domain per line. Inline comments are kept in the final ranking.
-# Keep the list focused: large CDN, cloud edge, static assets, software distribution, and update endpoints.
-# The script only performs normal HTTPS/TLS handshakes.
+# Default pool is mainland-China friendly first: large CDN, cloud edge, static assets,
+# software/update distribution, and domestic cloud CDN endpoints.
+# Commonly blocked or unstable domains are excluded by default.
 
-# Cloudflare edge / CDN
+# Cloudflare edge / CDN, usually safer than social/search blocked domains
 cloudflare-dns.com # Cloudflare anycast DNS edge
 speed.cloudflare.com # Cloudflare speed test edge
 cdnjs.cloudflare.com # Cloudflare cdnjs static CDN
@@ -10,13 +11,10 @@ ajax.cloudflare.com # Cloudflare AJAX library CDN
 static.cloudflareinsights.com # Cloudflare telemetry/static edge
 challenges.cloudflare.com # Cloudflare challenge platform edge
 
-# Microsoft / Azure / Office CDN
+# Microsoft / Azure / Office CDN, excluding auth CDN domains that are red in mainland checks
 officecdn.microsoft.com # Microsoft Office CDN
 res.cdn.office.net # Microsoft Office static CDN
 statics.teams.cdn.office.net # Microsoft Teams static CDN
-aadcdn.msauth.net # Microsoft Entra auth CDN
-aadcdn.msftauth.net # Microsoft auth static CDN
-acctcdn.msauth.net # Microsoft account auth CDN
 download.microsoft.com # Microsoft software download CDN
 download.visualstudio.microsoft.com # Visual Studio download CDN
 update.code.visualstudio.com # VS Code update service
@@ -39,99 +37,62 @@ is1-ssl.mzstatic.com # Apple media static CDN
 is2-ssl.mzstatic.com # Apple media static CDN
 itunes.apple.com # Apple iTunes service edge
 
-# Google / GCP static and download edges
-fonts.gstatic.com # Google Fonts static CDN
-ssl.gstatic.com # Google static assets
-ajax.googleapis.com # Google hosted libraries CDN
-play-lh.googleusercontent.com # Google Play image CDN
-dl.google.com # Google download CDN
-redirector.gvt1.com # Google download redirector
-clients2.google.com # Google update/service edge
-storage.googleapis.com # Google Cloud Storage edge
-gcr.io # Google container registry edge
-
-# AWS / CloudFront / Docker distribution
-d1.awsstatic.com # AWS static asset CDN
-public.ecr.aws # AWS public container registry
-download.docker.com # Docker package CDN
-registry-1.docker.io # Docker registry edge
-auth.docker.io # Docker auth edge
-production.cloudflare.docker.com # Docker layer CDN on Cloudflare
-
-# Fastly / GitHub / npm / developer distribution
-github.githubassets.com # GitHub static assets on CDN
-objects.githubusercontent.com # GitHub release/object CDN
-raw.githubusercontent.com # GitHub raw content CDN
-codeload.github.com # GitHub archive download edge
-avatars.githubusercontent.com # GitHub avatar CDN
-cdn.jsdelivr.net # jsDelivr global CDN
-fastly.jsdelivr.net # jsDelivr Fastly edge
-gcore.jsdelivr.net # jsDelivr Gcore edge
-testingcf.jsdelivr.net # jsDelivr Cloudflare test edge
-unpkg.com # npm package CDN
-registry.npmjs.org # npm registry edge
-nodejs.org # Node.js distribution edge
-static.rust-lang.org # Rust static release CDN
-static.crates.io # crates.io package CDN
-crates.io # Rust crate registry edge
-pypi.org # Python package index edge
-files.pythonhosted.org # Python package file CDN
-
-# Mozilla / Adobe / Oracle software distribution
-download.mozilla.org # Mozilla download redirector
-archive.mozilla.org # Mozilla archive CDN
-addons.mozilla.org # Mozilla add-ons edge
-aus5.mozilla.org # Mozilla update service edge
+# Akamai / enterprise software distribution
 assets.adobedtm.com # Adobe tag/static CDN
 ccmdl.adobe.com # Adobe Creative Cloud download CDN
 armmf.adobe.com # Adobe media/download CDN
 download.oracle.com # Oracle download CDN
 yum.oracle.com # Oracle Linux package CDN
+download.mozilla.org # Mozilla download redirector
+archive.mozilla.org # Mozilla archive CDN
+addons.mozilla.org # Mozilla add-ons edge
+aus5.mozilla.org # Mozilla update service edge
 
 # China and Asia large CDN / cloud edges
 g.alicdn.com # Alibaba Cloud static CDN
 img.alicdn.com # Alibaba image CDN
 at.alicdn.com # Alibaba iconfont/static CDN
 gw.alicdn.com # Alibaba gateway/static edge
+assets.alicdn.com # Alibaba asset CDN
+ae01.alicdn.com # Alibaba image/static CDN
+cloudcache.tencent-cloud.com # Tencent Cloud cache edge
 mat1.gtimg.com # Tencent static CDN
 vm.gtimg.cn # Tencent video/static CDN
 i.gtimg.cn # Tencent image CDN
 staticfile.qq.com # Tencent static library CDN
 js.aq.qq.com # Tencent security/static CDN
+qzonestyle.gtimg.cn # Tencent Qzone style CDN
 gss0.bdstatic.com # Baidu static CDN
 bce.bdstatic.com # Baidu Cloud static CDN
 passport.baidu.com # Baidu account edge
+sp0.baidu.com # Baidu static edge
 lf3-cdn-tos.bytecdntp.com # ByteDance CDN edge
 lf6-cdn-tos.bytecdntp.com # ByteDance CDN edge
 lf9-cdn-tos.bytecdntp.com # ByteDance CDN edge
+lf3-static.bytednsdoc.com # ByteDance static edge
+sf3-cdn-tos.douyinstatic.com # Douyin static CDN
+sf6-cdn-tos.douyinstatic.com # Douyin static CDN
 res-static.hc-cdn.cn # Huawei CDN static edge
 consumer-img.huawei.com # Huawei consumer image CDN
 repo.huaweicloud.com # Huawei Cloud mirror edge
+mirrors.huaweicloud.com # Huawei Cloud mirror edge
+mirrors.aliyun.com # Alibaba Cloud mirror edge
+mirrors.cloud.tencent.com # Tencent Cloud mirror edge
 cdn.bootcdn.net # BootCDN static libraries
 lib.baomitu.com # Qihoo 360 static library CDN
+s.ssl.qhres2.com # Qihoo 360 static CDN
+qhstaticssl.kujiale.com # Kujiale/Qiniu static CDN
 
-# Social / SaaS large static CDNs
-static.xx.fbcdn.net # Meta static CDN
-connect.facebook.net # Meta SDK edge
-abs.twimg.com # X static CDN
-pbs.twimg.com # X media CDN
-video.twimg.com # X video CDN
-cdn.syndication.twimg.com # X syndication CDN
-static.licdn.com # LinkedIn static CDN
-media.licdn.com # LinkedIn media CDN
-a.slack-edge.com # Slack static edge
-emoji.slack-edge.com # Slack emoji static edge
+# SaaS and commerce CDNs that are generally less sensitive than social/search domains
 cdn.shopify.com # Shopify CDN
 cdn.shopifycdn.net # Shopify static CDN
 static.zdassets.com # Zendesk static CDN
 assets.zendesk.com # Zendesk asset CDN
-cdn.segment.com # Segment analytics CDN
-js.stripe.com # Stripe JS CDN
-m.stripe.network # Stripe network edge
-cdn.discordapp.com # Discord attachment CDN
-media.discordapp.net # Discord media proxy CDN
+js.hsforms.net # HubSpot forms CDN
+js.hs-analytics.net # HubSpot analytics CDN
+cdn.cookielaw.org # OneTrust CDN
 
-# Game / content distribution
+# Game / content distribution, generally CDN-style and not social/search
 steamcdn-a.akamaihd.net # Steam Akamai CDN
 cdn.akamai.steamstatic.com # Steam static Akamai CDN
 community.akamai.steamstatic.com # Steam community static CDN

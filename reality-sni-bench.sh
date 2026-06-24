@@ -12,6 +12,7 @@ TOP_N=10
 STRICT_TLS13=0
 MODE="both"
 GEO_AWARE=1
+CN_SAFE=1
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
 
@@ -40,6 +41,8 @@ Options:
   -m MODE    Address family: both, ipv4, or ipv6. Default: both
   --strict   Keep only domains that pass TLS 1.3 + certificate verification.
   --no-geo   Disable source/edge IP region and ASN scoring bonus.
+  --include-risky
+             Include domains that are commonly blocked or unstable in mainland China.
   -h         Show help.
 
 Examples:
@@ -94,6 +97,26 @@ trim_domain() {
 is_domain() {
   local domain=$1
   [[ "$domain" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+}
+
+is_cn_risky_domain() {
+  local domain=$1
+  case "$domain" in
+    aadcdn.msauth.net|aadcdn.msftauth.net|acctcdn.msauth.net|\
+    *google*|*.gstatic.com|*.googleapis.com|*.googleusercontent.com|*.gvt1.com|gcr.io|\
+    *facebook*|*.fbcdn.net|connect.facebook.net|\
+    *.twitter.com|*.twimg.com|*.x.com|\
+    *.discordapp.com|*.discord.com|\
+    download.docker.com|registry-1.docker.io|auth.docker.io|production.cloudflare.docker.com|\
+    github.githubassets.com|objects.githubusercontent.com|raw.githubusercontent.com|codeload.github.com|avatars.githubusercontent.com|\
+    registry.npmjs.org|unpkg.com|nodejs.org|static.rust-lang.org|static.crates.io|crates.io|pypi.org|files.pythonhosted.org|\
+    a.slack-edge.com|emoji.slack-edge.com|cdn.segment.com|js.stripe.com|m.stripe.network)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 resolve_ips() {
@@ -431,6 +454,7 @@ while [[ $# -gt 0 ]]; do
     -m) MODE=${2:?}; shift 2 ;;
     --strict) STRICT_TLS13=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
+    --include-risky) CN_SAFE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     --version) echo "$VERSION"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -467,6 +491,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   d=$(trim_domain "$line")
   if [[ -n "$d" ]]; then
     if is_domain "$d"; then
+      if [[ $CN_SAFE -eq 1 ]] && is_cn_risky_domain "$d"; then
+        log "Skip CN-risky domain: $d"
+        continue
+      fi
       note=$(candidate_note "$line")
       if [[ -z "${DOMAIN_SEEN[$d]+x}" ]]; then
         DOMAINS+=("$d")

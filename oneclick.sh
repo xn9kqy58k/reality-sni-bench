@@ -11,6 +11,7 @@ CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-4}"
 TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
 GEO_AWARE="${GEO_AWARE:-1}"
+INCLUDE_RISKY="${INCLUDE_RISKY:-0}"
 SKIP_INSTALL=0
 ASSUME_YES=0
 INTERACTIVE=0
@@ -35,6 +36,7 @@ Options:
   -n, --top NUM            print top N results, default: 10
   --no-strict              do not require TLS 1.3 + certificate verification
   --no-geo                 disable source/edge IP region and ASN scoring bonus
+  --include-risky          include domains commonly blocked or unstable in mainland China
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory
   --interactive            ask for custom domains and mode
@@ -170,8 +172,28 @@ ensure_candidates() {
 
   local tmp_candidates
   tmp_candidates=$(mktemp)
-  awk '
-    !/^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)([[:space:]]*(#.*)?)?$/
+  awk -v include_risky="$INCLUDE_RISKY" '
+    function norm(line, d) {
+      d = line
+      sub(/#.*/, "", d)
+      gsub(/^[ \t]+|[ \t]+$/, "", d)
+      sub(/^https:\/\//, "", d)
+      sub(/^http:\/\//, "", d)
+      sub(/\/.*/, "", d)
+      sub(/:.*/, "", d)
+      return tolower(d)
+    }
+    function old_default(d) {
+      return d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/
+    }
+    function cn_risky(d) {
+      return d ~ /(google|gstatic\.com|googleapis\.com|googleusercontent\.com|gvt1\.com|gcr\.io|facebook|fbcdn\.net|twitter\.com|twimg\.com|^x\.com$|discordapp\.com|discord\.com|docker\.com|docker\.io|githubassets\.com|githubusercontent\.com|github\.com|npmjs\.org|unpkg\.com|nodejs\.org|rust-lang\.org|crates\.io|pypi\.org|pythonhosted\.org|slack-edge\.com|segment\.com|stripe\.com|stripe\.network|aadcdn\.msauth\.net|aadcdn\.msftauth\.net|acctcdn\.msauth\.net)/
+    }
+    {
+      d = norm($0)
+      if (d != "" && (old_default(d) || (include_risky !~ /^(1|true|yes|y)$/ && cn_risky(d)))) next
+      print
+    }
   ' candidates.txt >"$tmp_candidates"
   cat candidates.example.txt "$tmp_candidates" | awk '
     function norm(line, d) {
@@ -285,11 +307,15 @@ run_bench() {
 
   local strict_arg=()
   local geo_arg=()
+  local risky_arg=()
   if [[ "$STRICT" =~ ^(1|true|yes|y)$ ]]; then
     strict_arg=(--strict)
   fi
   if [[ ! "$GEO_AWARE" =~ ^(1|true|yes|y)$ ]]; then
     geo_arg=(--no-geo)
+  fi
+  if [[ "$INCLUDE_RISKY" =~ ^(1|true|yes|y)$ ]]; then
+    risky_arg=(--include-risky)
   fi
 
   log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS"
@@ -301,7 +327,8 @@ run_bench() {
     -c "$CONNECT_TIMEOUT" \
     -n "$TOP_N" \
     "${strict_arg[@]}" \
-    "${geo_arg[@]}"
+    "${geo_arg[@]}" \
+    "${risky_arg[@]}"
 
   echo
   echo "Done."
@@ -322,6 +349,7 @@ while [[ $# -gt 0 ]]; do
     -n|--top) TOP_N=${2:?}; shift 2 ;;
     --no-strict) STRICT=0; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
+    --include-risky) INCLUDE_RISKY=1; shift ;;
     --no-install) SKIP_INSTALL=1; shift ;;
     --install-dir) INSTALL_DIR=${2:?}; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
