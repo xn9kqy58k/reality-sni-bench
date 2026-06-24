@@ -137,7 +137,15 @@ ensure_project() {
 
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     log "Updating $INSTALL_DIR"
-    git -C "$INSTALL_DIR" pull --ff-only || log "Update failed; continuing with local copy."
+    if ! git -C "$INSTALL_DIR" pull --ff-only; then
+      local backup_patch
+      backup_patch="$INSTALL_DIR/local-changes-$(date +%Y%m%d-%H%M%S).patch"
+      log "Update blocked by local tracked-file changes. Backing them up to $backup_patch"
+      git -C "$INSTALL_DIR" diff >"$backup_patch" || true
+      git -C "$INSTALL_DIR" fetch origin main
+      git -C "$INSTALL_DIR" reset --hard origin/main
+      log "Synced tracked files to origin/main. candidates.txt is kept."
+    fi
   elif has_cmd git; then
     log "Cloning $REPO_URL to $INSTALL_DIR"
     git clone "$REPO_URL" "$INSTALL_DIR"
