@@ -1,20 +1,43 @@
 # Reality SNI Bench
 
-一个给 VPS 本机运行的 Reality SNI 候选域名评分脚本。它只做正常 DNS、TLS 和 HTTPS 探测，用来筛出更适合作为 Reality `dest` / `serverNames` 的候选域名。
+给 VPS 本机运行的 Reality SNI 候选域名评分脚本。它只做正常 DNS、TLS 和 HTTPS 探测，用来筛出更适合作为 Reality `dest` / `serverNames` 的候选域名。
 
-## 快速使用
+## 一键运行
+
+克隆后运行交互菜单：
 
 ```bash
-git clone <your-repo-url> reality-sni-bench
+git clone https://github.com/xn9kqy58k/reality-sni-bench.git
 cd reality-sni-bench
-cp candidates.example.txt candidates.txt
-chmod +x reality-sni-bench.sh
-./reality-sni-bench.sh -f candidates.txt -r 5 --strict
+bash oneclick.sh
 ```
 
-默认会同时测试 IPv4 和 IPv6。也可以只跑其中一种：
+菜单里可以选择：
+
+- `1`：只测 IPv4
+- `2`：只测 IPv6
+- `3`：IPv4 + IPv6 都测
+
+也可以无交互直接跑：
 
 ```bash
+bash oneclick.sh --mode ipv4 --rounds 5 --yes
+bash oneclick.sh --mode ipv6 --rounds 5 --yes
+bash oneclick.sh --mode both --rounds 5 --yes
+```
+
+如果仓库改成 public，也可以直接用 raw 一键命令：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh)
+```
+
+## 高级用法
+
+```bash
+cp candidates.example.txt candidates.txt
+chmod +x reality-sni-bench.sh
+./reality-sni-bench.sh -f candidates.txt -m both -r 5 --strict
 ./reality-sni-bench.sh -f candidates.txt -m ipv4 -r 5 --strict
 ./reality-sni-bench.sh -f candidates.txt -m ipv6 -r 5 --strict
 ```
@@ -37,26 +60,14 @@ chmod +x reality-sni-bench.sh
 - DNS 解析不过度发散。
 - IPv4 和 IPv6 分开排名，因为同一个 SNI 在两条线路上的表现可能完全不同。
 
-## 常用参数
-
-```bash
-./reality-sni-bench.sh -f candidates.txt -r 5 -o report.csv -s best.json
-./reality-sni-bench.sh -f candidates.txt -m both --strict
-./reality-sni-bench.sh -f candidates.txt -m ipv4 --strict
-./reality-sni-bench.sh -f candidates.txt -m ipv6 --strict
-./reality-sni-bench.sh -h
-```
-
 ## 依赖
 
-Debian/Ubuntu VPS：
+`oneclick.sh` 会尽量自动安装依赖。手动安装示例：
 
 ```bash
 sudo apt update
-sudo apt install -y curl openssl dnsutils coreutils gawk sed
+sudo apt install -y curl openssl dnsutils coreutils gawk sed git
 ```
-
-`dig` 不是强制依赖；没有 `dig` 时会尝试 `getent`。
 
 ## 注意
 

@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_URL="${REPO_URL:-https://github.com/xn9kqy58k/reality-sni-bench.git}"
+RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main}"
+INSTALL_DIR="${INSTALL_DIR:-}"
+MODE="${MODE:-}"
+ROUNDS="${ROUNDS:-5}"
+TIMEOUT="${TIMEOUT:-8}"
+CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-4}"
+TOP_N="${TOP_N:-10}"
+STRICT="${STRICT:-1}"
+SKIP_INSTALL=0
+ASSUME_YES=0
+
+usage() {
+  cat <<'EOF'
+Reality SNI Bench one-click runner
+
+Usage:
+  bash oneclick.sh [options]
+
+Options:
+  -m, --mode MODE          both, ipv4, or ipv6
+  -r, --rounds NUM         test rounds per domain, default: 5
+  -t, --timeout SEC        total timeout per probe, default: 8
+  -c, --connect-timeout S  curl connect timeout, default: 4
+  -n, --top NUM            print top N results, default: 10
+  --no-strict              do not require TLS 1.3 + certificate verification
+  --no-install             skip dependency installation
+  --install-dir DIR        clone/update project in this directory
+  -y, --yes                non-interactive defaults
+  -h, --help               show help
+
+Examples:
+  bash oneclick.sh
+  bash oneclick.sh --mode ipv4 --rounds 5
+  MODE=ipv6 ROUNDS=5 bash oneclick.sh --yes
+EOF
+}
+
+log() {
+  printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+sudo_cmd() {
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    "$@"
+  elif has_cmd sudo; then
+    sudo "$@"
+  else
+    return 1
+  fi
+}
+
+default_install_dir() {
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    printf '/opt/reality-sni-bench'
+  else
+    printf '%s/reality-sni-bench' "${HOME:-.}"
+  fi
+}
+
+normalize_mode() {
+  case "${1,,}" in
+    1|4|ip4|ipv4|v4) printf 'ipv4' ;;
+    2|6|ip6|ipv6|v6) printf 'ipv6' ;;
+    3|both|all|dual) printf 'both' ;;
+    *) return 1 ;;
+  esac
+}
+
+install_deps() {
+  [[ $SKIP_INSTALL -eq 1 ]] && return 0
+
+  local missing=()
+  local cmd
+  for cmd in curl openssl awk sed sort timeout tr git; do
+    has_cmd "$cmd" || missing+=("$cmd")
+  done
+
+  if has_cmd dig || has_cmd getent; then
+    :
+  else
+    missing+=("dig-or-getent")
+  fi
+
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+
+  log "Installing missing dependencies if possible: ${missing[*]}"
+
+  if has_cmd apt-get; then
+    sudo_cmd apt-get update
+    sudo_cmd apt-get install -y curl openssl dnsutils coreutils gawk sed git
+  elif has_cmd dnf; then
+    sudo_cmd dnf install -y curl openssl bind-utils coreutils gawk sed git
+  elif has_cmd yum; then
+    sudo_cmd yum install -y curl openssl bind-utils coreutils gawk sed git
+  elif has_cmd apk; then
+    sudo_cmd apk add --no-cache curl openssl bind-tools coreutils gawk sed git
+  elif has_cmd pacman; then
+    sudo_cmd pacman -Sy --noconfirm curl openssl bind coreutils gawk sed git
+  else
+    die "No supported package manager found. Install curl openssl dnsutils/coreutils/gawk/sed/git manually."
+  fi
+}
+
+ensure_project() {
+  if [[ -f "./reality-sni-bench.sh" ]]; then
+    PROJECT_DIR=$(pwd)
+    chmod +x "$PROJECT_DIR/reality-sni-bench.sh"
+    return 0
+  fi
+
+  INSTALL_DIR=${INSTALL_DIR:-$(default_install_dir)}
+  mkdir -p "$(dirname "$INSTALL_DIR")"
+
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
+    log "Updating $INSTALL_DIR"
+    git -C "$INSTALL_DIR" pull --ff-only || log "Update failed; continuing with local copy."
+  elif has_cmd git; then
+    log "Cloning $REPO_URL to $INSTALL_DIR"
+    git clone "$REPO_URL" "$INSTALL_DIR"
+  else
+    log "Git not found; downloading scripts to $INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
+    curl -fsSL "$RAW_BASE/reality-sni-bench.sh" -o "$INSTALL_DIR/reality-sni-bench.sh"
+    curl -fsSL "$RAW_BASE/candidates.example.txt" -o "$INSTALL_DIR/candidates.example.txt"
+  fi
+
+  PROJECT_DIR=$INSTALL_DIR
+  chmod +x "$PROJECT_DIR/reality-sni-bench.sh"
+}
+
+ensure_candidates() {
+  cd "$PROJECT_DIR"
+
+  if [[ ! -f candidates.txt ]]; then
+    cp candidates.example.txt candidates.txt
+    log "Created candidates.txt from candidates.example.txt"
+  fi
+
+  if [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
+    printf 'Append custom candidate SNI domains now? [y/N]: '
+    read -r answer || true
+    case "${answer,,}" in
+      y|yes)
+        echo "Paste one domain per line. Press Enter on an empty line to finish."
+        while IFS= read -r line; do
+          [[ -z "$line" ]] && break
+          printf '%s\n' "$line" >> candidates.txt
+        done
+        sort -u candidates.txt -o candidates.txt
+        ;;
+    esac
+  fi
+}
+
+select_mode() {
+  if [[ -n "$MODE" ]]; then
+    MODE=$(normalize_mode "$MODE") || die "Invalid mode: $MODE"
+    return 0
+  fi
+
+  if [[ $ASSUME_YES -eq 1 || ! -t 0 ]]; then
+    MODE="both"
+    return 0
+  fi
+
+  cat <<'EOF'
+
+Select test mode:
+  1) IPv4 only
+  2) IPv6 only
+  3) IPv4 + IPv6
+EOF
+  printf 'Choice [3]: '
+  read -r choice || true
+  choice=${choice:-3}
+  MODE=$(normalize_mode "$choice") || die "Invalid choice: $choice"
+}
+
+prompt_numbers() {
+  [[ $ASSUME_YES -eq 1 || ! -t 0 ]] && return 0
+
+  printf 'Rounds per domain [%s]: ' "$ROUNDS"
+  read -r answer || true
+  [[ -n "$answer" ]] && ROUNDS=$answer
+
+  printf 'Probe timeout seconds [%s]: ' "$TIMEOUT"
+  read -r answer || true
+  [[ -n "$answer" ]] && TIMEOUT=$answer
+
+  printf 'Use strict TLS 1.3 + cert verification? [Y/n]: '
+  read -r answer || true
+  case "${answer,,}" in
+    n|no) STRICT=0 ;;
+    *) STRICT=1 ;;
+  esac
+}
+
+run_bench() {
+  cd "$PROJECT_DIR"
+
+  local strict_arg=()
+  if [[ "$STRICT" =~ ^(1|true|yes|y)$ ]]; then
+    strict_arg=(--strict)
+  fi
+
+  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS"
+  ./reality-sni-bench.sh \
+    -f candidates.txt \
+    -m "$MODE" \
+    -r "$ROUNDS" \
+    -t "$TIMEOUT" \
+    -c "$CONNECT_TIMEOUT" \
+    -n "$TOP_N" \
+    "${strict_arg[@]}"
+
+  echo
+  echo "Done."
+  echo "Report:  $PROJECT_DIR/reality-sni-report.csv"
+  echo "Snippet: $PROJECT_DIR/reality-best-snippet.json"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -m|--mode) MODE=${2:?}; shift 2 ;;
+    -r|--rounds) ROUNDS=${2:?}; shift 2 ;;
+    -t|--timeout) TIMEOUT=${2:?}; shift 2 ;;
+    -c|--connect-timeout) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
+    -n|--top) TOP_N=${2:?}; shift 2 ;;
+    --no-strict) STRICT=0; shift ;;
+    --no-install) SKIP_INSTALL=1; shift ;;
+    --install-dir) INSTALL_DIR=${2:?}; shift 2 ;;
+    -y|--yes) ASSUME_YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown option: $1" ;;
+  esac
+done
+
+install_deps
+ensure_project
+ensure_candidates
+select_mode
+prompt_numbers
+run_bench
