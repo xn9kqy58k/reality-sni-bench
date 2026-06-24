@@ -1,6 +1,6 @@
 # Reality SNI Bench
 
-一个给 VPS 本机跑的 Reality SNI 候选域名评分脚本。它只做正常 DNS、TLS 和 HTTPS 探测，用来筛出更适合作为 Reality `dest` / `serverNames` 的候选域名。
+一个给 VPS 本机运行的 Reality SNI 候选域名评分脚本。它只做正常 DNS、TLS 和 HTTPS 探测，用来筛出更适合作为 Reality `dest` / `serverNames` 的候选域名。
 
 ## 快速使用
 
@@ -12,10 +12,17 @@ chmod +x reality-sni-bench.sh
 ./reality-sni-bench.sh -f candidates.txt -r 5 --strict
 ```
 
-输出：
+默认会同时测试 IPv4 和 IPv6。也可以只跑其中一种：
 
-- `reality-sni-report.csv`：候选域名排名、握手耗时、TLS 1.3、证书校验、ALPN、HTTP 状态码等。
-- `reality-best-snippet.json`：第一名候选域名生成的 Reality 配置片段，分成服务端 `serverInboundRealitySettings` 和客户端 `clientOutboundRealitySettings` 两段，需要你替换 `privateKey`、`publicKey` 和 `shortIds`。
+```bash
+./reality-sni-bench.sh -f candidates.txt -m ipv4 -r 5 --strict
+./reality-sni-bench.sh -f candidates.txt -m ipv6 -r 5 --strict
+```
+
+## 输出
+
+- `reality-sni-report.csv`：候选域名排名、地址族、握手耗时、TLS 1.3、证书校验、ALPN、HTTP 状态码、实际连接 IP、DNS 解析 IP。
+- `reality-best-snippet.json`：分别生成 IPv4 和 IPv6 的 Reality 配置片段，需要替换 `privateKey`、`publicKey` 和 `shortIds`。
 
 ## 评分思路
 
@@ -28,18 +35,21 @@ chmod +x reality-sni-bench.sh
 - TLS 握手耗时低。
 - HTTP 返回码不是异常的 5xx 或连接失败。
 - DNS 解析不过度发散。
+- IPv4 和 IPv6 分开排名，因为同一个 SNI 在两条线路上的表现可能完全不同。
 
 ## 常用参数
 
 ```bash
 ./reality-sni-bench.sh -f candidates.txt -r 5 -o report.csv -s best.json
-./reality-sni-bench.sh -f candidates.txt --strict
+./reality-sni-bench.sh -f candidates.txt -m both --strict
+./reality-sni-bench.sh -f candidates.txt -m ipv4 --strict
+./reality-sni-bench.sh -f candidates.txt -m ipv6 --strict
 ./reality-sni-bench.sh -h
 ```
 
 ## 依赖
 
-常见 Debian/Ubuntu VPS：
+Debian/Ubuntu VPS：
 
 ```bash
 sudo apt update

@@ -10,6 +10,7 @@ OUT_CSV="reality-sni-report.csv"
 OUT_SNIPPET="reality-best-snippet.json"
 TOP_N=10
 STRICT_TLS13=0
+MODE="both"
 
 usage() {
   cat <<'EOF'
@@ -26,12 +27,14 @@ Options:
   -o FILE    Output CSV path. Default: reality-sni-report.csv
   -s FILE    Output best Reality snippet path. Default: reality-best-snippet.json
   -n NUM     Print top N results. Default: 10
+  -m MODE    Address family: both, ipv4, or ipv6. Default: both
   --strict   Keep only domains that pass TLS 1.3 + certificate verification.
   -h         Show help.
 
 Examples:
   ./reality-sni-bench.sh -f candidates.txt -r 5 -o report.csv
   ./reality-sni-bench.sh -f candidates.txt --strict
+  ./reality-sni-bench.sh -f candidates.txt -m ipv6
 EOF
 }
 
@@ -70,14 +73,21 @@ is_domain() {
 
 resolve_ips() {
   local domain=$1
+  local family=$2
   local ips=""
 
-  if command -v dig >/dev/null 2>&1; then
-    ips=$(dig +short A "$domain" 2>/dev/null | grep -E '^[0-9.]+$' | sort -u | paste -sd '|' -)
+  if [[ "$family" == "ipv4" ]] && command -v dig >/dev/null 2>&1; then
+    ips=$(dig +short A "$domain" 2>/dev/null | grep -E '^[0-9.]+$' | sort -u | paste -sd '|' - || true)
+  elif [[ "$family" == "ipv6" ]] && command -v dig >/dev/null 2>&1; then
+    ips=$(dig +short AAAA "$domain" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' | sort -u | paste -sd '|' - || true)
   fi
 
   if [[ -z "$ips" ]] && command -v getent >/dev/null 2>&1; then
-    ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd '|' -)
+    if [[ "$family" == "ipv4" ]]; then
+      ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd '|' - || true)
+    else
+      ips=$(getent ahostsv6 "$domain" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd '|' - || true)
+    fi
   fi
 
   printf '%s' "$ips"
@@ -85,17 +95,26 @@ resolve_ips() {
 
 openssl_probe() {
   local domain=$1
+  local family=$2
   local output rc protocol alpn verify verify_ok tls13 h2 http11
+  local ip_flag=()
+
+  if [[ "$family" == "ipv4" ]]; then
+    ip_flag=(-4)
+  elif [[ "$family" == "ipv6" ]]; then
+    ip_flag=(-6)
+  fi
 
   set +e
   output=$(
     timeout "$TIMEOUT" openssl s_client \
+      "${ip_flag[@]}" \
       -connect "${domain}:443" \
       -servername "$domain" \
       -verify_hostname "$domain" \
       -tls1_3 \
       -alpn "h2,http/1.1" \
-      </dev/null 2>&1
+      </dev/null 2>&1 | tr -d '\000'
   )
   rc=$?
   set -e
@@ -126,17 +145,26 @@ openssl_probe() {
     verify_ok=1
   fi
 
-  printf '%s,%s,%s,%s,%s,%s' "$tls13" "$verify_ok" "$h2" "$http11" "$protocol" "$alpn"
+  printf '%s,%s,%s,%s,%s,%s\n' "$tls13" "$verify_ok" "$h2" "$http11" "$protocol" "$alpn"
 }
 
 curl_once() {
   local domain=$1
+  local family=$2
   local tmp
+  local ip_flag=()
   tmp=$(mktemp)
+
+  if [[ "$family" == "ipv4" ]]; then
+    ip_flag=(--ipv4)
+  elif [[ "$family" == "ipv6" ]]; then
+    ip_flag=(--ipv6)
+  fi
 
   set +e
   curl \
     --silent --show-error --location \
+    "${ip_flag[@]}" \
     --output /dev/null \
     --connect-timeout "$CONNECT_TIMEOUT" \
     --max-time "$TIMEOUT" \
@@ -148,11 +176,12 @@ curl_once() {
 
   if [[ $rc -ne 0 ]]; then
     rm -f "$tmp"
-    printf '0,0,0,,999'
+    printf '0,0,0,,999\n'
     return 0
   fi
 
   cat "$tmp"
+  printf '\n'
   rm -f "$tmp"
 }
 
@@ -200,6 +229,7 @@ while [[ $# -gt 0 ]]; do
     -o) OUT_CSV=${2:?}; shift 2 ;;
     -s) OUT_SNIPPET=${2:?}; shift 2 ;;
     -n) TOP_N=${2:?}; shift 2 ;;
+    -m) MODE=${2:?}; shift 2 ;;
     --strict) STRICT_TLS13=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --version) echo "$VERSION"; exit 0 ;;
@@ -207,12 +237,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$MODE" != "both" && "$MODE" != "ipv4" && "$MODE" != "ipv6" ]]; then
+  echo "Invalid mode: $MODE. Use both, ipv4, or ipv6." >&2
+  exit 1
+fi
+
 need_cmd curl
 need_cmd openssl
 need_cmd awk
 need_cmd sed
 need_cmd sort
 need_cmd timeout
+need_cmd tr
 
 if [[ ! -f "$INPUT_FILE" ]]; then
   echo "Candidate file not found: $INPUT_FILE" >&2
@@ -222,7 +258,7 @@ fi
 TMP_CSV=$(mktemp)
 trap 'rm -f "$TMP_CSV"' EXIT
 
-printf 'rank,domain,score,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips\n' >"$TMP_CSV"
+printf 'rank,family,domain,score,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips\n' >"$TMP_CSV"
 
 mapfile -t DOMAINS < <(while IFS= read -r line || [[ -n "$line" ]]; do
   d=$(trim_domain "$line")
@@ -240,79 +276,104 @@ if [[ ${#DOMAINS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-log "Testing ${#DOMAINS[@]} candidate domains, rounds=${ROUNDS}, timeout=${TIMEOUT}s"
+if [[ "$MODE" == "both" ]]; then
+  FAMILIES=(ipv4 ipv6)
+else
+  FAMILIES=("$MODE")
+fi
+
+log "Testing ${#DOMAINS[@]} candidate domains, mode=${MODE}, rounds=${ROUNDS}, timeout=${TIMEOUT}s"
 
 for domain in "${DOMAINS[@]}"; do
-  log "Probe $domain"
+  for family in "${FAMILIES[@]}"; do
+    log "Probe $domain over $family"
 
-  ips=$(resolve_ips "$domain")
-  ip_count=0
-  [[ -n "$ips" ]] && ip_count=$(awk -F'|' '{print NF}' <<<"$ips")
+    ips=$(resolve_ips "$domain" "$family")
+    ip_count=0
+    [[ -n "$ips" ]] && ip_count=$(awk -F'|' '{print NF}' <<<"$ips")
 
-  IFS=',' read -r tls13 verify_ok h2 http11 protocol alpn < <(openssl_probe "$domain")
+    IFS=',' read -r tls13 verify_ok h2 http11 protocol alpn < <(openssl_probe "$domain" "$family")
 
-  success=0
-  http_good=0
-  total_appconnect=0
-  last_code=0
-  last_ip=""
+    success=0
+    http_good=0
+    total_appconnect=0
+    last_code=0
+    last_ip=""
 
-  for ((i=1; i<=ROUNDS; i++)); do
-    IFS=',' read -r code appconnect total remote_ip ssl_verify < <(curl_once "$domain")
-    last_code=$code
-    last_ip=$remote_ip
+    for ((i=1; i<=ROUNDS; i++)); do
+      IFS=',' read -r code appconnect total remote_ip ssl_verify < <(curl_once "$domain" "$family")
+      last_code=$code
+      last_ip=$remote_ip
 
-    if [[ "$code" =~ ^[0-9]+$ ]] && [[ "$code" -gt 0 ]] && [[ "$ssl_verify" == "0" ]]; then
-      success=$((success + 1))
-      app_ms=$(awk -v t="$appconnect" 'BEGIN { printf "%.0f", t * 1000 }')
-      total_appconnect=$(awk -v a="$total_appconnect" -v b="$app_ms" 'BEGIN { printf "%.0f", a + b }')
-      if [[ "$code" =~ ^(200|204|301|302|307|308|401|403|404)$ ]]; then
-        http_good=1
+      if [[ "$code" =~ ^[0-9]+$ ]] && [[ "$code" -gt 0 ]] && [[ "$ssl_verify" == "0" ]]; then
+        success=$((success + 1))
+        app_ms=$(awk -v t="$appconnect" 'BEGIN { printf "%.0f", t * 1000 }')
+        total_appconnect=$(awk -v a="$total_appconnect" -v b="$app_ms" 'BEGIN { printf "%.0f", a + b }')
+        if [[ "$code" =~ ^(200|204|301|302|307|308|401|403|404)$ ]]; then
+          http_good=1
+        fi
       fi
+    done
+
+    avg_ms=0
+    if [[ $success -gt 0 ]]; then
+      avg_ms=$(awk -v total="$total_appconnect" -v success="$success" 'BEGIN { printf "%.0f", total / success }')
     fi
+
+    if [[ $STRICT_TLS13 -eq 1 && ( $tls13 -ne 1 || $verify_ok -ne 1 ) ]]; then
+      score="0.0"
+    else
+      score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_good" "$ip_count")
+    fi
+
+    {
+      printf '0,%s,' "$family"
+      csv_escape "$domain"; printf ','
+      printf '%s,%s,%s,%s,%s,%s,' "$score" "$avg_ms" "$success" "$ROUNDS" "$tls13" "$verify_ok"
+      csv_escape "$alpn"; printf ','
+      printf '%s,' "$last_code"
+      csv_escape "$last_ip"; printf ','
+      csv_escape "$ips"; printf '\n'
+    } >>"$TMP_CSV"
   done
-
-  avg_ms=0
-  if [[ $success -gt 0 ]]; then
-    avg_ms=$(awk -v total="$total_appconnect" -v success="$success" 'BEGIN { printf "%.0f", total / success }')
-  fi
-
-  if [[ $STRICT_TLS13 -eq 1 && ( $tls13 -ne 1 || $verify_ok -ne 1 ) ]]; then
-    score="0.0"
-  else
-    score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_good" "$ip_count")
-  fi
-
-  {
-    printf '0,'
-    csv_escape "$domain"; printf ','
-    printf '%s,%s,%s,%s,%s,%s,' "$score" "$avg_ms" "$success" "$ROUNDS" "$tls13" "$verify_ok"
-    csv_escape "$alpn"; printf ','
-    printf '%s,' "$last_code"
-    csv_escape "$last_ip"; printf ','
-    csv_escape "$ips"; printf '\n'
-  } >>"$TMP_CSV"
 done
 
 {
   head -n 1 "$TMP_CSV"
-  tail -n +2 "$TMP_CSV" | sort -t',' -k3,3nr -k4,4n | awk -F',' 'BEGIN { OFS="," } { $1=NR; print }'
+  tail -n +2 "$TMP_CSV" | sort -t',' -k4,4nr -k5,5n | awk -F',' 'BEGIN { OFS="," } { $1=NR; print }'
 } >"$OUT_CSV"
 
-best_domain=$(awk -F',' 'NR==2 { gsub(/^"|"$/, "", $2); gsub(/""/, "\"", $2); print $2 }' "$OUT_CSV")
+best_ipv4=$(awk -F',' '$2=="ipv4" && $4+0 > 0 { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
+best_ipv6=$(awk -F',' '$2=="ipv6" && $4+0 > 0 { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
+snippet_ipv4=${best_ipv4:-REPLACE_WITH_BEST_IPV4_SNI}
+snippet_ipv6=${best_ipv6:-REPLACE_WITH_BEST_IPV6_SNI}
 
-if [[ -n "$best_domain" ]]; then
+if [[ -n "$best_ipv4" || -n "$best_ipv6" ]]; then
   cat >"$OUT_SNIPPET" <<EOF
 {
-  "serverInboundRealitySettings": {
-    "dest": "${best_domain}:443",
+  "serverInboundRealitySettingsIPv4": {
+    "dest": "${snippet_ipv4}:443",
     "xver": 0,
-    "serverNames": ["${best_domain}"],
+    "serverNames": ["${snippet_ipv4}"],
     "privateKey": "REPLACE_WITH_YOUR_XRAY_PRIVATE_KEY",
     "shortIds": ["REPLACE_WITH_YOUR_SHORT_ID"]
   },
-  "clientOutboundRealitySettings": {
-    "serverName": "${best_domain}",
+  "clientOutboundRealitySettingsIPv4": {
+    "serverName": "${snippet_ipv4}",
+    "fingerprint": "chrome",
+    "publicKey": "REPLACE_WITH_YOUR_XRAY_PUBLIC_KEY",
+    "shortId": "REPLACE_WITH_YOUR_SHORT_ID",
+    "spiderX": "/"
+  },
+  "serverInboundRealitySettingsIPv6": {
+    "dest": "${snippet_ipv6}:443",
+    "xver": 0,
+    "serverNames": ["${snippet_ipv6}"],
+    "privateKey": "REPLACE_WITH_YOUR_XRAY_PRIVATE_KEY",
+    "shortIds": ["REPLACE_WITH_YOUR_SHORT_ID"]
+  },
+  "clientOutboundRealitySettingsIPv6": {
+    "serverName": "${snippet_ipv6}",
     "fingerprint": "chrome",
     "publicKey": "REPLACE_WITH_YOUR_XRAY_PUBLIC_KEY",
     "shortId": "REPLACE_WITH_YOUR_SHORT_ID",
@@ -323,13 +384,20 @@ EOF
 fi
 
 log "Done. CSV: $OUT_CSV"
-if [[ -n "${best_domain:-}" ]]; then
-  log "Best candidate: $best_domain"
+if [[ -n "${best_ipv4:-}" ]]; then
+  log "Best IPv4 candidate: $best_ipv4"
+fi
+if [[ -n "${best_ipv6:-}" ]]; then
+  log "Best IPv6 candidate: $best_ipv6"
+fi
+if [[ -n "${best_ipv4:-}" || -n "${best_ipv6:-}" ]]; then
   log "Snippet: $OUT_SNIPPET"
 fi
 
 echo
 echo "Top ${TOP_N}:"
 awk -F',' 'NR==1 { next } NR<=n+1 {
-  printf "%2s  %-36s score=%5s avg_tls=%sms success=%s/%s alpn=%s code=%s\n", $1, $2, $3, $4, $5, $6, $9, $10
+  gsub(/^"|"$/, "", $3)
+  gsub(/^"|"$/, "", $10)
+  printf "%2s  %-5s %-36s score=%5s avg_tls=%sms success=%s/%s alpn=%s code=%s\n", $1, $2, $3, $4, $5, $6, $7, $10, $11
 }' n="$TOP_N" "$OUT_CSV"
