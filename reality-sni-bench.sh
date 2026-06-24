@@ -11,6 +11,16 @@ OUT_SNIPPET="reality-best-snippet.json"
 TOP_N=10
 STRICT_TLS13=0
 MODE="both"
+GEO_AWARE=1
+GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
+GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
+
+declare -A SOURCE_IPS=()
+declare -A SOURCE_COUNTRIES=()
+declare -A SOURCE_REGIONS=()
+declare -A SOURCE_CITIES=()
+declare -A SOURCE_ASNS=()
+declare -A SOURCE_ORGS=()
 
 usage() {
   cat <<'EOF'
@@ -29,6 +39,7 @@ Options:
   -n NUM     Print top N results. Default: 10
   -m MODE    Address family: both, ipv4, or ipv6. Default: both
   --strict   Keep only domains that pass TLS 1.3 + certificate verification.
+  --no-geo   Disable source/edge IP region and ASN scoring bonus.
   -h         Show help.
 
 Examples:
@@ -43,16 +54,30 @@ log() {
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
+  has_cmd "$1" || {
     echo "Missing command: $1" >&2
     exit 1
   }
+}
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 csv_escape() {
   local s=${1:-}
   s=${s//\"/\"\"}
   printf '"%s"' "$s"
+}
+
+candidate_note() {
+  local raw=$1
+  local note=""
+  if [[ "$raw" == *"#"* ]]; then
+    note=${raw#*#}
+    note=$(printf '%s' "$note" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
+  fi
+  printf '%s' "$note"
 }
 
 trim_domain() {
@@ -220,6 +245,180 @@ score_domain() {
     }'
 }
 
+apply_geo_bonus() {
+  local base_score=$1
+  local geo_bonus=$2
+
+  awk -v base="$base_score" -v geo="$geo_bonus" '
+    BEGIN {
+      score = base + geo
+      if (score > 100) score = 100
+      printf "%.1f", score
+    }'
+}
+
+public_ip_for_family() {
+  local family=$1
+  local ip_flag=()
+  local endpoint="https://api.ipify.org"
+
+  if [[ "$family" == "ipv4" ]]; then
+    ip_flag=(--ipv4)
+  else
+    ip_flag=(--ipv6)
+    endpoint="https://api64.ipify.org"
+  fi
+
+  curl --silent --show-error --fail "${ip_flag[@]}" --max-time "$GEO_API_TIMEOUT" "$endpoint" 2>/dev/null || true
+}
+
+lookup_ip_geo() {
+  local ip=$1
+  local cached result
+
+  if [[ $GEO_AWARE -ne 1 || -z "$ip" || ! "$ip" =~ ^[0-9a-fA-F:.]+$ ]]; then
+    printf '\t\t\t\t\n'
+    return 0
+  fi
+
+  if [[ -f "$GEO_CACHE_FILE" ]]; then
+    cached=$(awk -F '\t' -v ip="$ip" '$1 == ip { print; exit }' "$GEO_CACHE_FILE" 2>/dev/null || true)
+    if [[ -n "$cached" ]]; then
+      printf '%s\n' "$cached" | cut -f2-
+      return 0
+    fi
+  fi
+
+  result=$(
+    python3 - "$ip" "$GEO_API_TIMEOUT" <<'PY'
+import json
+import re
+import sys
+import urllib.request
+
+ip = sys.argv[1]
+timeout = float(sys.argv[2])
+url = f"http://ip-api.com/json/{ip}?fields=status,countryCode,regionName,city,as,asname,org,query"
+
+def clean(value):
+    return str(value or "").replace("\t", " ").replace("\n", " ").strip()
+
+try:
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        data = json.load(response)
+except Exception:
+    print("\t\t\t\t")
+    raise SystemExit
+
+if data.get("status") != "success":
+    print("\t\t\t\t")
+    raise SystemExit
+
+as_text = clean(data.get("as"))
+match = re.match(r"AS(\d+)", as_text)
+asn = f"AS{match.group(1)}" if match else ""
+org = clean(data.get("asname") or data.get("org") or re.sub(r"^AS\d+\s*", "", as_text))
+fields = [
+    clean(data.get("countryCode")),
+    clean(data.get("regionName")),
+    clean(data.get("city")),
+    asn,
+    org,
+]
+print("\t".join(fields))
+PY
+  )
+
+  printf '%s\t%s\n' "$ip" "$result" >>"$GEO_CACHE_FILE" 2>/dev/null || true
+  printf '%s\n' "$result"
+}
+
+init_geo_context() {
+  [[ $GEO_AWARE -eq 1 ]] || return 0
+
+  if ! has_cmd python3; then
+    log "Geo scoring disabled: python3 not found"
+    GEO_AWARE=0
+    return 0
+  fi
+
+  : >"$GEO_CACHE_FILE" 2>/dev/null || true
+
+  local family ip country region city asn org
+  for family in "${FAMILIES[@]}"; do
+    ip=$(public_ip_for_family "$family")
+    [[ -n "$ip" ]] || continue
+    IFS=$'\t' read -r country region city asn org < <(lookup_ip_geo "$ip")
+    SOURCE_IPS[$family]=$ip
+    SOURCE_COUNTRIES[$family]=$country
+    SOURCE_REGIONS[$family]=$region
+    SOURCE_CITIES[$family]=$city
+    SOURCE_ASNS[$family]=$asn
+    SOURCE_ORGS[$family]=$org
+
+    if [[ -n "$country$asn" ]]; then
+      log "Source $family: $ip ${country:-unknown} ${region:-} ${city:-} ${asn:-} ${org:-}"
+    fi
+  done
+}
+
+geo_bonus_for_ip() {
+  local family=$1
+  local ip=$2
+  local country region city asn org
+  local src_country=${SOURCE_COUNTRIES[$family]:-}
+  local src_region=${SOURCE_REGIONS[$family]:-}
+  local src_city=${SOURCE_CITIES[$family]:-}
+  local src_asn=${SOURCE_ASNS[$family]:-}
+  local src_org=${SOURCE_ORGS[$family]:-}
+  local bonus=0
+  local notes=()
+
+  if [[ $GEO_AWARE -ne 1 || -z "$ip" || -z "$src_country$src_asn" ]]; then
+    printf '0\t\n'
+    return 0
+  fi
+
+  IFS=$'\t' read -r country region city asn org < <(lookup_ip_geo "$ip")
+
+  if [[ -n "$asn" && -n "$src_asn" && "$asn" == "$src_asn" ]]; then
+    bonus=$((bonus + 12))
+    notes+=("same ASN $asn")
+  elif [[ -n "$org" && -n "$src_org" && "${org,,}" == "${src_org,,}" ]]; then
+    bonus=$((bonus + 8))
+    notes+=("same org $org")
+  fi
+
+  if [[ -n "$country" && -n "$src_country" && "$country" == "$src_country" ]]; then
+    bonus=$((bonus + 6))
+    notes+=("same country $country")
+  fi
+
+  if [[ -n "$region" && -n "$src_region" && "${region,,}" == "${src_region,,}" ]]; then
+    bonus=$((bonus + 4))
+    notes+=("same region $region")
+  fi
+
+  if [[ -n "$city" && -n "$src_city" && "${city,,}" == "${src_city,,}" ]]; then
+    bonus=$((bonus + 4))
+    notes+=("same city $city")
+  fi
+
+  if [[ $bonus -gt 18 ]]; then
+    bonus=18
+  fi
+
+  if [[ ${#notes[@]} -eq 0 && -n "$country$asn" ]]; then
+    notes+=("edge ${country:-unknown} ${asn:-unknown}")
+  fi
+
+  local match_note=""
+  if [[ ${#notes[@]} -gt 0 ]]; then
+    match_note=$(IFS='; '; printf '%s' "${notes[*]}")
+  fi
+  printf '%s\t%s\n' "$bonus" "$match_note"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -f) INPUT_FILE=${2:?}; shift 2 ;;
@@ -231,6 +430,7 @@ while [[ $# -gt 0 ]]; do
     -n) TOP_N=${2:?}; shift 2 ;;
     -m) MODE=${2:?}; shift 2 ;;
     --strict) STRICT_TLS13=1; shift ;;
+    --no-geo) GEO_AWARE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     --version) echo "$VERSION"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -258,18 +458,32 @@ fi
 TMP_CSV=$(mktemp)
 trap 'rm -f "$TMP_CSV"' EXIT
 
-printf 'rank,family,domain,score,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips\n' >"$TMP_CSV"
+printf 'rank,family,domain,score,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips,geo_bonus,geo_match,note\n' >"$TMP_CSV"
 
-mapfile -t DOMAINS < <(while IFS= read -r line || [[ -n "$line" ]]; do
+declare -A DOMAIN_SEEN=()
+declare -A DOMAIN_NOTES=()
+DOMAINS=()
+while IFS= read -r line || [[ -n "$line" ]]; do
   d=$(trim_domain "$line")
   if [[ -n "$d" ]]; then
     if is_domain "$d"; then
-      printf '%s\n' "$d"
+      note=$(candidate_note "$line")
+      if [[ -z "${DOMAIN_SEEN[$d]+x}" ]]; then
+        DOMAINS+=("$d")
+        DOMAIN_SEEN[$d]=1
+      fi
+      if [[ -n "$note" && -z "${DOMAIN_NOTES[$d]+x}" ]]; then
+        DOMAIN_NOTES[$d]=$note
+      fi
     else
       log "Skip invalid domain: $d"
     fi
   fi
-done <"$INPUT_FILE" | sort -u)
+done <"$INPUT_FILE"
+
+if [[ ${#DOMAINS[@]} -gt 0 ]]; then
+  mapfile -t DOMAINS < <(printf '%s\n' "${DOMAINS[@]}" | sort -u)
+fi
 
 if [[ ${#DOMAINS[@]} -eq 0 ]]; then
   echo "No candidate domains found in $INPUT_FILE" >&2
@@ -281,6 +495,8 @@ if [[ "$MODE" == "both" ]]; then
 else
   FAMILIES=("$MODE")
 fi
+
+init_geo_context
 
 log "Testing ${#DOMAINS[@]} candidate domains, mode=${MODE}, rounds=${ROUNDS}, timeout=${TIMEOUT}s"
 
@@ -320,10 +536,13 @@ for domain in "${DOMAINS[@]}"; do
       avg_ms=$(awk -v total="$total_appconnect" -v success="$success" 'BEGIN { printf "%.0f", total / success }')
     fi
 
+    IFS=$'\t' read -r geo_bonus geo_match < <(geo_bonus_for_ip "$family" "$last_ip")
+
     if [[ $STRICT_TLS13 -eq 1 && ( $tls13 -ne 1 || $verify_ok -ne 1 ) ]]; then
       score="0.0"
     else
-      score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_good" "$ip_count")
+      base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_good" "$ip_count")
+      score=$(apply_geo_bonus "$base_score" "$geo_bonus")
     fi
 
     {
@@ -333,14 +552,17 @@ for domain in "${DOMAINS[@]}"; do
       csv_escape "$alpn"; printf ','
       printf '%s,' "$last_code"
       csv_escape "$last_ip"; printf ','
-      csv_escape "$ips"; printf '\n'
+      csv_escape "$ips"; printf ','
+      printf '%s,' "$geo_bonus"
+      csv_escape "$geo_match"; printf ','
+      csv_escape "${DOMAIN_NOTES[$domain]:-}"; printf '\n'
     } >>"$TMP_CSV"
   done
 done
 
 {
   head -n 1 "$TMP_CSV"
-  tail -n +2 "$TMP_CSV" | sort -t',' -k4,4nr -k5,5n | awk -F',' 'BEGIN { OFS="," } { $1=NR; print }'
+  tail -n +2 "$TMP_CSV" | sort -t',' -k4,4nr -k14,14nr -k5,5n | awk -F',' 'BEGIN { OFS="," } { $1=NR; print }'
 } >"$OUT_CSV"
 
 best_ipv4=$(awk -F',' '$2=="ipv4" && $4+0 > 0 { gsub(/^"|"$/, "", $3); gsub(/""/, "\"", $3); print $3; exit }' "$OUT_CSV")
@@ -399,5 +621,16 @@ echo "Top ${TOP_N}:"
 awk -F',' 'NR==1 { next } NR<=n+1 {
   gsub(/^"|"$/, "", $3)
   gsub(/^"|"$/, "", $10)
-  printf "%2s  %-5s %-36s score=%5s avg_tls=%sms success=%s/%s alpn=%s code=%s\n", $1, $2, $3, $4, $5, $6, $7, $10, $11
+  geo=$15
+  note=$16
+  gsub(/^"|"$/, "", geo)
+  gsub(/^"|"$/, "", note)
+  suffix=""
+  if (geo != "") suffix = suffix " geo=" geo
+  if (note != "") suffix = suffix " # " note
+  if (suffix != "") {
+    printf "%2s  %-5s %-36s score=%5s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s%s\n", $1, $2, $3, $4, $14, $5, $6, $7, $10, $11, suffix
+  } else {
+    printf "%2s  %-5s %-36s score=%5s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s\n", $1, $2, $3, $4, $14, $5, $6, $7, $10, $11
+  }
 }' n="$TOP_N" "$OUT_CSV"

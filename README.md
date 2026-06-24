@@ -42,6 +42,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 - `--rounds 5`：每个域名测试 5 轮，默认 3 轮
 - `--add example.com`：追加一个候选域名，可重复写多次
 - `--no-strict`：不强制 TLS 1.3 + 证书校验通过
+- `--no-geo`：关闭本机出口和候选边缘 IP 的地区/ASN 加权
 - `--install-dir /opt/reality-sni-bench`：指定安装目录
 
 也可以用管道形式：
@@ -64,12 +65,18 @@ chmod +x reality-sni-bench.sh
 
 ## 输出
 
-- `reality-sni-report.csv`：候选域名排名、地址族、握手耗时、TLS 1.3、证书校验、ALPN、HTTP 状态码、实际连接 IP、DNS 解析 IP。
+- `reality-sni-report.csv`：候选域名排名、地址族、握手耗时、TLS 1.3、证书校验、ALPN、HTTP 状态码、实际连接 IP、DNS 解析 IP、地域/ASN 加分和候选备注。
 - `reality-best-snippet.json`：分别生成 IPv4 和 IPv6 的 Reality 配置片段，需要替换 `privateKey`、`publicKey` 和 `shortIds`。
 
 ## 优选逻辑
 
-脚本倾向选择：
+脚本分三层优选：
+
+1. 候选池预筛：默认池优先放大厂 CDN、云边缘、静态资源、软件分发、更新服务和数据中心入口，避免泛泛的 `www` 首页域名。
+2. 硬指标筛选：Reality 的 SNI 必须像正常 HTTPS 站点，所以先看 TLS 1.3、证书链/主机名校验、HTTPS 成功率、ALPN、握手耗时和 DNS 发散程度。
+3. 地域/ASN 加权：脚本会检测 VPS 本机出口 IP，再对候选实际连接到的 `remote_ip` 做地理和 ASN 查询。优先级是同 ASN/同机房网络 > 同城市 > 同区域 > 同国家。结果会写入 `geo_bonus` 和 `geo_match`。
+
+现实边界：公网 HTTPS 探测无法直接知道“同一个物理机房”。脚本用可公开验证的信号近似：同 ASN/同云厂商网络最接近“同机房/同园区”，其次是同城市、同区域、同国家，再结合握手耗时和成功率排序。
 
 - HTTPS 正常可达，证书链和主机名校验通过。
 - 支持 TLS 1.3。
@@ -79,6 +86,12 @@ chmod +x reality-sni-bench.sh
 - HTTP 返回码不是异常 5xx 或连接失败。
 - DNS 解析不过度发散。
 - IPv4 和 IPv6 分开排名，因为同一个 SNI 在两条线路上的表现可能完全不同。
+
+默认启用地域/ASN 加权。需要关闭时：
+
+```bash
+./reality-sni-bench.sh -f candidates.txt --no-geo
+```
 
 ## 依赖
 

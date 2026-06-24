@@ -10,6 +10,7 @@ TIMEOUT="${TIMEOUT:-8}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-4}"
 TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
+GEO_AWARE="${GEO_AWARE:-1}"
 SKIP_INSTALL=0
 ASSUME_YES=0
 INTERACTIVE=0
@@ -33,6 +34,7 @@ Options:
   -c, --connect-timeout S  curl connect timeout, default: 4
   -n, --top NUM            print top N results, default: 10
   --no-strict              do not require TLS 1.3 + certificate verification
+  --no-geo                 disable source/edge IP region and ASN scoring bonus
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory
   --interactive            ask for custom domains and mode
@@ -93,7 +95,7 @@ install_deps() {
 
   local missing=()
   local cmd
-  for cmd in curl openssl awk sed sort timeout tr git; do
+  for cmd in curl openssl awk sed sort timeout tr git python3; do
     has_cmd "$cmd" || missing+=("$cmd")
   done
 
@@ -109,17 +111,17 @@ install_deps() {
 
   if has_cmd apt-get; then
     sudo_cmd apt-get update
-    sudo_cmd apt-get install -y curl openssl dnsutils coreutils gawk sed git
+    sudo_cmd apt-get install -y curl openssl dnsutils coreutils gawk sed git python3
   elif has_cmd dnf; then
-    sudo_cmd dnf install -y curl openssl bind-utils coreutils gawk sed git
+    sudo_cmd dnf install -y curl openssl bind-utils coreutils gawk sed git python3
   elif has_cmd yum; then
-    sudo_cmd yum install -y curl openssl bind-utils coreutils gawk sed git
+    sudo_cmd yum install -y curl openssl bind-utils coreutils gawk sed git python3
   elif has_cmd apk; then
-    sudo_cmd apk add --no-cache curl openssl bind-tools coreutils gawk sed git
+    sudo_cmd apk add --no-cache curl openssl bind-tools coreutils gawk sed git python3
   elif has_cmd pacman; then
-    sudo_cmd pacman -Sy --noconfirm curl openssl bind coreutils gawk sed git
+    sudo_cmd pacman -Sy --noconfirm curl openssl bind coreutils gawk sed git python
   else
-    die "No supported package manager found. Install curl openssl dnsutils/coreutils/gawk/sed/git manually."
+    die "No supported package manager found. Install curl openssl dnsutils/coreutils/gawk/sed/git/python3 manually."
   fi
 }
 
@@ -158,12 +160,60 @@ ensure_candidates() {
     log "Created candidates.txt from candidates.example.txt"
   fi
 
+  local tmp_candidates
+  tmp_candidates=$(mktemp)
+  awk '
+    !/^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)([[:space:]]*(#.*)?)?$/
+  ' candidates.txt >"$tmp_candidates"
+  cat candidates.example.txt "$tmp_candidates" | awk '
+    function norm(line, d) {
+      d = line
+      sub(/#.*/, "", d)
+      gsub(/^[ \t]+|[ \t]+$/, "", d)
+      sub(/^https:\/\//, "", d)
+      sub(/^http:\/\//, "", d)
+      sub(/\/.*/, "", d)
+      sub(/:.*/, "", d)
+      return tolower(d)
+    }
+    {
+      d = norm($0)
+      if (d == "") {
+        if ($0 ~ /^#/ && !seen_comment[$0]++) print
+        next
+      }
+      if (!seen_domain[d]++) print
+    }
+  ' > candidates.txt
+  rm -f "$tmp_candidates"
+
   if [[ ${#CUSTOM_DOMAINS[@]} -gt 0 ]]; then
     local domain
     for domain in "${CUSTOM_DOMAINS[@]}"; do
       printf '%s\n' "$domain" >> candidates.txt
     done
-    sort -u candidates.txt -o candidates.txt
+    tmp_candidates=$(mktemp)
+    awk '
+      function norm(line, d) {
+        d = line
+        sub(/#.*/, "", d)
+        gsub(/^[ \t]+|[ \t]+$/, "", d)
+        sub(/^https:\/\//, "", d)
+        sub(/^http:\/\//, "", d)
+        sub(/\/.*/, "", d)
+        sub(/:.*/, "", d)
+        return tolower(d)
+      }
+      {
+        d = norm($0)
+        if (d == "") {
+          if ($0 ~ /^#/ && !seen_comment[$0]++) print
+          next
+        }
+        if (!seen_domain[d]++) print
+      }
+    ' candidates.txt >"$tmp_candidates"
+    mv "$tmp_candidates" candidates.txt
     log "Added ${#CUSTOM_DOMAINS[@]} custom candidate domain(s)"
   fi
 
@@ -226,8 +276,12 @@ run_bench() {
   cd "$PROJECT_DIR"
 
   local strict_arg=()
+  local geo_arg=()
   if [[ "$STRICT" =~ ^(1|true|yes|y)$ ]]; then
     strict_arg=(--strict)
+  fi
+  if [[ ! "$GEO_AWARE" =~ ^(1|true|yes|y)$ ]]; then
+    geo_arg=(--no-geo)
   fi
 
   log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS"
@@ -238,7 +292,8 @@ run_bench() {
     -t "$TIMEOUT" \
     -c "$CONNECT_TIMEOUT" \
     -n "$TOP_N" \
-    "${strict_arg[@]}"
+    "${strict_arg[@]}" \
+    "${geo_arg[@]}"
 
   echo
   echo "Done."
@@ -258,6 +313,7 @@ while [[ $# -gt 0 ]]; do
     -c|--connect-timeout) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
     -n|--top) TOP_N=${2:?}; shift 2 ;;
     --no-strict) STRICT=0; shift ;;
+    --no-geo) GEO_AWARE=0; shift ;;
     --no-install) SKIP_INSTALL=1; shift ;;
     --install-dir) INSTALL_DIR=${2:?}; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
