@@ -4,12 +4,10 @@
 
 ## 一键运行
 
-克隆后运行交互菜单：
+交互菜单一键运行：
 
 ```bash
-git clone https://github.com/xn9kqy58k/reality-sni-bench.git
-cd reality-sni-bench
-bash oneclick.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh)
 ```
 
 菜单里可以选择：
@@ -18,18 +16,20 @@ bash oneclick.sh
 - `2`：只测 IPv6
 - `3`：IPv4 + IPv6 都测
 
-也可以无交互直接跑：
+无交互直接跑：
 
 ```bash
-bash oneclick.sh --mode ipv4 --rounds 5 --yes
-bash oneclick.sh --mode ipv6 --rounds 5 --yes
-bash oneclick.sh --mode both --rounds 5 --yes
+curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --mode ipv4 --rounds 5 --yes
+curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --mode ipv6 --rounds 5 --yes
+curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --mode both --rounds 5 --yes
 ```
 
-如果仓库改成 public，也可以直接用 raw 一键命令：
+也可以先克隆再运行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh)
+git clone https://github.com/xn9kqy58k/reality-sni-bench.git
+cd reality-sni-bench
+bash oneclick.sh
 ```
 
 ## 高级用法
