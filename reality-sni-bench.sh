@@ -5,6 +5,7 @@ VERSION="1.0.0"
 ROUNDS=3
 TIMEOUT=8
 CONNECT_TIMEOUT=4
+PARALLEL="${PARALLEL:-8}"
 INPUT_FILE="candidates.txt"
 OUT_CSV="reality-sni-report.csv"
 OUT_SNIPPET="reality-best-snippet.json"
@@ -16,6 +17,8 @@ CN_DNS_CHECK=1
 MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
+CN_DNS_TIMEOUT="${CN_DNS_TIMEOUT:-1}"
+FULL_TLS_PROBE="${FULL_TLS_PROBE:-0}"
 CN_DNS_RESOLVERS=("223.5.5.5" "119.29.29.29" "180.76.76.76" "114.114.114.114")
 
 declare -A SOURCE_IPS=()
@@ -37,6 +40,7 @@ Options:
   -r NUM     Test rounds per domain. Default: 3
   -t SEC     Total timeout for each curl/openssl probe. Default: 8
   -c SEC     Curl connect timeout. Default: 4
+  -p NUM     Concurrent domain/family probes. Default: 8
   -o FILE    Output CSV path. Default: reality-sni-report.csv
   -s FILE    Output best Reality snippet path. Default: reality-best-snippet.json
   -n NUM     Print top N results. Default: 10
@@ -45,6 +49,8 @@ Options:
   --no-geo   Disable source/edge IP region and ASN scoring bonus.
   --no-cn-dns-check
              Disable mainland public DNS precheck.
+  --full-tls-probe
+             Also run the older openssl ALPN probe for each candidate.
   -h         Show help.
 
 Examples:
@@ -171,6 +177,7 @@ cn_dns_probe() {
   local family=$2
   local qtype="A"
   local resolver answer ok=0 total=0
+  local tmp_dir pids=() pid result_file
 
   [[ "$family" == "ipv6" ]] && qtype="AAAA"
 
@@ -179,15 +186,35 @@ cn_dns_probe() {
     return 0
   fi
 
+  tmp_dir=$(mktemp -d)
+
   for resolver in "${CN_DNS_RESOLVERS[@]}"; do
     total=$((total + 1))
-    while IFS= read -r answer; do
-      if is_valid_public_ip "$answer"; then
-        ok=$((ok + 1))
-        break
-      fi
-    done < <(dig @"$resolver" +short "$qtype" "$domain" +time=2 +tries=1 2>/dev/null | grep -E '^[0-9a-fA-F:.]+$' || true)
+    result_file="$tmp_dir/$resolver"
+    {
+      local found=0
+      while IFS= read -r answer; do
+        if is_valid_public_ip "$answer"; then
+          found=1
+          break
+        fi
+      done < <(dig @"$resolver" +short "$qtype" "$domain" +time="$CN_DNS_TIMEOUT" +tries=1 2>/dev/null | grep -E '^[0-9a-fA-F:.]+$' || true)
+      printf '%s\n' "$found"
+    } >"$result_file" &
+    pids+=("$!")
   done
+
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  for result_file in "$tmp_dir"/*; do
+    [[ -f "$result_file" ]] || continue
+    if [[ $(<"$result_file") == "1" ]]; then
+      ok=$((ok + 1))
+    fi
+  done
+  rm -rf "$tmp_dir"
 
   printf '%s/%s\tcn-dns %s/%s\n' "$ok" "$total" "$ok" "$total"
 }
@@ -250,9 +277,8 @@ openssl_probe() {
 curl_once() {
   local domain=$1
   local family=$2
-  local tmp
+  local output
   local ip_flag=()
-  tmp=$(mktemp)
 
   if [[ "$family" == "ipv4" ]]; then
     ip_flag=(--ipv4)
@@ -261,27 +287,25 @@ curl_once() {
   fi
 
   set +e
-  curl \
+  output=$(curl \
     --silent --show-error --location \
     "${ip_flag[@]}" \
     --output /dev/null \
     --connect-timeout "$CONNECT_TIMEOUT" \
     --max-time "$TIMEOUT" \
     --tlsv1.3 \
-    --write-out '%{http_code},%{time_appconnect},%{time_total},%{remote_ip},%{ssl_verify_result}' \
-    "https://${domain}/" >"$tmp" 2>/dev/null
+    --write-out '%{http_code},%{time_appconnect},%{time_total},%{remote_ip},%{ssl_verify_result},%{http_version}' \
+    "https://${domain}/" 2>/dev/null
+  )
   local rc=$?
   set -e
 
-  if [[ $rc -ne 0 ]]; then
-    rm -f "$tmp"
-    printf '0,0,0,,999\n'
+  if [[ $rc -ne 0 || -z "$output" ]]; then
+    printf '0,0,0,,999,0\n'
     return 0
   fi
 
-  cat "$tmp"
-  printf '\n'
-  rm -f "$tmp"
+  printf '%s\n' "$output"
 }
 
 score_domain() {
@@ -416,7 +440,7 @@ init_geo_context() {
     return 0
   fi
 
-  : >"$GEO_CACHE_FILE" 2>/dev/null || true
+  touch "$GEO_CACHE_FILE" 2>/dev/null || true
 
   local family ip country region city asn org
   for family in "${FAMILIES[@]}"; do
@@ -499,6 +523,7 @@ while [[ $# -gt 0 ]]; do
     -r) ROUNDS=${2:?}; shift 2 ;;
     -t) TIMEOUT=${2:?}; shift 2 ;;
     -c) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
+    -p) PARALLEL=${2:?}; shift 2 ;;
     -o) OUT_CSV=${2:?}; shift 2 ;;
     -s) OUT_SNIPPET=${2:?}; shift 2 ;;
     -n) TOP_N=${2:?}; shift 2 ;;
@@ -506,6 +531,7 @@ while [[ $# -gt 0 ]]; do
     --strict) STRICT_TLS13=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
+    --full-tls-probe) FULL_TLS_PROBE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --version) echo "$VERSION"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -517,13 +543,20 @@ if [[ "$MODE" != "both" && "$MODE" != "ipv4" && "$MODE" != "ipv6" ]]; then
   exit 1
 fi
 
+if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [[ "$PARALLEL" -lt 1 ]]; then
+  echo "Invalid parallel value: $PARALLEL. Use a positive integer." >&2
+  exit 1
+fi
+
 need_cmd curl
-need_cmd openssl
 need_cmd awk
 need_cmd sed
 need_cmd sort
-need_cmd timeout
 need_cmd tr
+if [[ "$FULL_TLS_PROBE" =~ ^(1|true|yes|y)$ ]]; then
+  need_cmd openssl
+  need_cmd timeout
+fi
 
 if [[ ! -f "$INPUT_FILE" ]]; then
   echo "Candidate file not found: $INPUT_FILE" >&2
@@ -531,7 +564,12 @@ if [[ ! -f "$INPUT_FILE" ]]; then
 fi
 
 TMP_CSV=$(mktemp)
-trap 'rm -f "$TMP_CSV"' EXIT
+TMP_RESULTS_DIR=$(mktemp -d)
+cleanup() {
+  rm -f "$TMP_CSV"
+  rm -rf "$TMP_RESULTS_DIR"
+}
+trap cleanup EXIT
 
 printf 'rank,family,domain,score,decision,avg_appconnect_ms,success_rounds,total_rounds,tls13,cert_verify,alpn,http_code,last_remote_ip,dns_ips,cn_dns,cn_dns_bonus,geo_bonus,geo_match,reason,note\n' >"$TMP_CSV"
 
@@ -577,110 +615,176 @@ fi
 
 init_geo_context
 
-log "Testing ${#DOMAINS[@]} candidate domains, mode=${MODE}, rounds=${ROUNDS}, timeout=${TIMEOUT}s"
+probe_candidate() {
+  local domain=$1
+  local family=$2
+  local output_file=$3
+  local ips ip_count cn_dns cn_dns_note cn_dns_ok cn_dns_bonus
+  local tls13 verify_ok h2 http11 protocol alpn
+  local success http_score total_appconnect last_code last_ip
+  local code appconnect total remote_ip ssl_verify http_version app_ms avg_ms
+  local geo_bonus geo_match base_score score decision reason
+  local reason_parts=()
 
+  log "Probe $domain over $family"
+
+  ips=$(resolve_ips "$domain" "$family")
+  ip_count=0
+  [[ -n "$ips" ]] && ip_count=$(awk -F'|' '{print NF}' <<<"$ips")
+
+  IFS=$'\t' read -r cn_dns cn_dns_note < <(cn_dns_probe "$domain" "$family")
+  cn_dns_ok=0
+  cn_dns_bonus=0
+  if [[ "$cn_dns" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+    cn_dns_ok=${BASH_REMATCH[1]}
+    if [[ $cn_dns_ok -ge 3 ]]; then
+      cn_dns_bonus=5
+    elif [[ $cn_dns_ok -ge 1 ]]; then
+      cn_dns_bonus=2
+    fi
+    if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
+      log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
+      return 0
+    fi
+  fi
+
+  tls13=0
+  verify_ok=0
+  h2=0
+  http11=0
+  protocol="no"
+  alpn="none"
+  success=0
+  http_score=0
+  total_appconnect=0
+  last_code=0
+  last_ip=""
+
+  for ((i=1; i<=ROUNDS; i++)); do
+    IFS=',' read -r code appconnect total remote_ip ssl_verify http_version < <(curl_once "$domain" "$family")
+    last_code=$code
+    last_ip=$remote_ip
+
+    if [[ "$code" =~ ^[0-9]+$ ]] && [[ "$code" -gt 0 ]] && [[ "$ssl_verify" == "0" ]]; then
+      success=$((success + 1))
+      tls13=1
+      verify_ok=1
+      protocol="TLSv1.3"
+
+      case "$http_version" in
+        2|2.0)
+          h2=1
+          alpn="h2"
+          ;;
+        1.1|1)
+          http11=1
+          [[ $h2 -ne 1 ]] && alpn="http/1.1"
+          ;;
+      esac
+
+      app_ms=$(awk -v t="$appconnect" 'BEGIN { printf "%.0f", t * 1000 }')
+      total_appconnect=$(awk -v a="$total_appconnect" -v b="$app_ms" 'BEGIN { printf "%.0f", a + b }')
+      if [[ "$code" =~ ^(200|204|301|302|307|308)$ ]]; then
+        [[ $http_score -lt 8 ]] && http_score=8
+      elif [[ "$code" =~ ^(401|403|404)$ ]]; then
+        [[ $http_score -lt 4 ]] && http_score=4
+      fi
+    fi
+  done
+
+  if [[ "$FULL_TLS_PROBE" =~ ^(1|true|yes|y)$ ]]; then
+    local probe_tls13 probe_verify_ok probe_h2 probe_http11 probe_protocol probe_alpn
+    IFS=',' read -r probe_tls13 probe_verify_ok probe_h2 probe_http11 probe_protocol probe_alpn < <(openssl_probe "$domain" "$family")
+    [[ $probe_tls13 -eq 1 ]] && tls13=1 && protocol="$probe_protocol"
+    [[ $probe_verify_ok -eq 1 ]] && verify_ok=1
+    if [[ $probe_h2 -eq 1 ]]; then
+      h2=1
+      alpn="$probe_alpn"
+    elif [[ $probe_http11 -eq 1 && $h2 -ne 1 ]]; then
+      http11=1
+      alpn="$probe_alpn"
+    fi
+  fi
+
+  avg_ms=0
+  if [[ $success -gt 0 ]]; then
+    avg_ms=$(awk -v total="$total_appconnect" -v success="$success" 'BEGIN { printf "%.0f", total / success }')
+  fi
+
+  IFS=$'\t' read -r geo_bonus geo_match < <(geo_bonus_for_ip "$family" "$last_ip")
+
+  if [[ $STRICT_TLS13 -eq 1 && ( $tls13 -ne 1 || $verify_ok -ne 1 ) ]]; then
+    score="0.0"
+  else
+    base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_score" "$ip_count")
+    score=$(apply_geo_bonus "$base_score" "$((geo_bonus + cn_dns_bonus))")
+  fi
+
+  decision="AVOID"
+  if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 95) }' \
+    && [[ $success -eq $ROUNDS && $tls13 -eq 1 && $verify_ok -eq 1 && $http_score -ge 4 ]]; then
+    decision="PRIMARY"
+  elif [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 85) }' \
+    && [[ $success -gt 0 && $tls13 -eq 1 && $verify_ok -eq 1 ]]; then
+    decision="BACKUP"
+  fi
+
+  [[ $cn_dns_bonus -gt 0 ]] && reason_parts+=("$cn_dns_note")
+  [[ -n "$geo_match" ]] && reason_parts+=("$geo_match")
+  if [[ $http_score -eq 8 ]]; then
+    reason_parts+=("good HTTP $last_code")
+  elif [[ $http_score -eq 4 ]]; then
+    reason_parts+=("acceptable HTTP $last_code")
+  else
+    reason_parts+=("weak HTTP $last_code")
+  fi
+  reason=$(IFS='; '; printf '%s' "${reason_parts[*]}")
+
+  {
+    printf '0,%s,' "$family"
+    csv_escape "$domain"; printf ','
+    printf '%s,' "$score"
+    csv_escape "$decision"; printf ','
+    printf '%s,%s,%s,%s,%s,' "$avg_ms" "$success" "$ROUNDS" "$tls13" "$verify_ok"
+    csv_escape "$alpn"; printf ','
+    printf '%s,' "$last_code"
+    csv_escape "$last_ip"; printf ','
+    csv_escape "$ips"; printf ','
+    csv_escape "$cn_dns"; printf ','
+    printf '%s,' "$cn_dns_bonus"
+    printf '%s,' "$geo_bonus"
+    csv_escape "$geo_match"; printf ','
+    csv_escape "$reason"; printf ','
+    csv_escape "${DOMAIN_NOTES[$domain]:-}"; printf '\n'
+  } >"$output_file"
+}
+
+throttle_jobs() {
+  local running
+  while true; do
+    running=$(jobs -pr | wc -l | tr -d ' ')
+    [[ "$running" -lt "$PARALLEL" ]] && break
+    if ! wait -n 2>/dev/null; then
+      sleep 0.1
+    fi
+  done
+}
+
+log "Testing ${#DOMAINS[@]} candidate domains, mode=${MODE}, rounds=${ROUNDS}, timeout=${TIMEOUT}s, parallel=${PARALLEL}"
+
+job_id=0
 for domain in "${DOMAINS[@]}"; do
   for family in "${FAMILIES[@]}"; do
-    log "Probe $domain over $family"
-
-    ips=$(resolve_ips "$domain" "$family")
-    ip_count=0
-    [[ -n "$ips" ]] && ip_count=$(awk -F'|' '{print NF}' <<<"$ips")
-
-    IFS=$'\t' read -r cn_dns cn_dns_note < <(cn_dns_probe "$domain" "$family")
-    cn_dns_ok=0
-    cn_dns_bonus=0
-    if [[ "$cn_dns" =~ ^([0-9]+)/([0-9]+)$ ]]; then
-      cn_dns_ok=${BASH_REMATCH[1]}
-      if [[ $cn_dns_ok -ge 3 ]]; then
-        cn_dns_bonus=5
-      elif [[ $cn_dns_ok -ge 1 ]]; then
-        cn_dns_bonus=2
-      fi
-      if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
-        log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
-        continue
-      fi
-    fi
-
-    IFS=',' read -r tls13 verify_ok h2 http11 protocol alpn < <(openssl_probe "$domain" "$family")
-
-    success=0
-    http_score=0
-    total_appconnect=0
-    last_code=0
-    last_ip=""
-
-    for ((i=1; i<=ROUNDS; i++)); do
-      IFS=',' read -r code appconnect total remote_ip ssl_verify < <(curl_once "$domain" "$family")
-      last_code=$code
-      last_ip=$remote_ip
-
-      if [[ "$code" =~ ^[0-9]+$ ]] && [[ "$code" -gt 0 ]] && [[ "$ssl_verify" == "0" ]]; then
-        success=$((success + 1))
-        app_ms=$(awk -v t="$appconnect" 'BEGIN { printf "%.0f", t * 1000 }')
-        total_appconnect=$(awk -v a="$total_appconnect" -v b="$app_ms" 'BEGIN { printf "%.0f", a + b }')
-        if [[ "$code" =~ ^(200|204|301|302|307|308)$ ]]; then
-          [[ $http_score -lt 8 ]] && http_score=8
-        elif [[ "$code" =~ ^(401|403|404)$ ]]; then
-          [[ $http_score -lt 4 ]] && http_score=4
-        fi
-      fi
-    done
-
-    avg_ms=0
-    if [[ $success -gt 0 ]]; then
-      avg_ms=$(awk -v total="$total_appconnect" -v success="$success" 'BEGIN { printf "%.0f", total / success }')
-    fi
-
-    IFS=$'\t' read -r geo_bonus geo_match < <(geo_bonus_for_ip "$family" "$last_ip")
-
-    if [[ $STRICT_TLS13 -eq 1 && ( $tls13 -ne 1 || $verify_ok -ne 1 ) ]]; then
-      score="0.0"
-    else
-      base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_score" "$ip_count")
-      score=$(apply_geo_bonus "$base_score" "$((geo_bonus + cn_dns_bonus))")
-    fi
-
-    decision="AVOID"
-    reason_parts=()
-    if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 95) }' \
-      && [[ $success -eq $ROUNDS && $tls13 -eq 1 && $verify_ok -eq 1 && $http_score -ge 4 ]]; then
-      decision="PRIMARY"
-    elif [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 85) }' \
-      && [[ $success -gt 0 && $tls13 -eq 1 && $verify_ok -eq 1 ]]; then
-      decision="BACKUP"
-    fi
-
-    [[ $cn_dns_bonus -gt 0 ]] && reason_parts+=("$cn_dns_note")
-    [[ -n "$geo_match" ]] && reason_parts+=("$geo_match")
-    if [[ $http_score -eq 8 ]]; then
-      reason_parts+=("good HTTP $last_code")
-    elif [[ $http_score -eq 4 ]]; then
-      reason_parts+=("acceptable HTTP $last_code")
-    else
-      reason_parts+=("weak HTTP $last_code")
-    fi
-    reason=$(IFS='; '; printf '%s' "${reason_parts[*]}")
-
-    {
-      printf '0,%s,' "$family"
-      csv_escape "$domain"; printf ','
-      printf '%s,' "$score"
-      csv_escape "$decision"; printf ','
-      printf '%s,%s,%s,%s,%s,' "$avg_ms" "$success" "$ROUNDS" "$tls13" "$verify_ok"
-      csv_escape "$alpn"; printf ','
-      printf '%s,' "$last_code"
-      csv_escape "$last_ip"; printf ','
-      csv_escape "$ips"; printf ','
-      csv_escape "$cn_dns"; printf ','
-      printf '%s,' "$cn_dns_bonus"
-      printf '%s,' "$geo_bonus"
-      csv_escape "$geo_match"; printf ','
-      csv_escape "$reason"; printf ','
-      csv_escape "${DOMAIN_NOTES[$domain]:-}"; printf '\n'
-    } >>"$TMP_CSV"
+    throttle_jobs
+    job_id=$((job_id + 1))
+    probe_candidate "$domain" "$family" "$(printf '%s/%05d.csv' "$TMP_RESULTS_DIR" "$job_id")" &
   done
+done
+wait || true
+
+for result_file in "$TMP_RESULTS_DIR"/*.csv; do
+  [[ -s "$result_file" ]] || continue
+  cat "$result_file" >>"$TMP_CSV"
 done
 
 {

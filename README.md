@@ -1,6 +1,6 @@
 # Reality SNI Bench
 
-给 VPS 本机跑的 Reality SNI 候选域名优选脚本。它只做正常 DNS、TLS 和 HTTPS 探测，用来筛出更适合做 Reality `dest` / `serverNames` 的候选域名。
+给 VPS 本机跑的 VLESS/Reality SNI 候选域名优选脚本。它只做正常 DNS、TLS 和 HTTPS 探测，用来筛出更适合做 VLESS SNI 或 Reality `dest` / `serverNames` 的候选域名。
 
 ## 一键运行
 
@@ -40,7 +40,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 - `--ipv6`：只测 IPv6
 - `--dual` / `--both`：IPv4 + IPv6 都测，默认值
 - `--rounds 5`：每个域名测试 5 轮，默认 3 轮
+- `--parallel 8`：并发测试域名/地址族数量，默认 8；网络很弱时可调低，VPS 性能好时可调高
 - `--add example.com`：追加一个候选域名，可重复写多次
+- `--full-tls-probe`：额外启用旧版 openssl ALPN 探测；更细但更慢
 - `--no-strict`：不强制 TLS 1.3 + 证书校验通过
 - `--no-geo`：关闭本机出口和候选边缘 IP 的地区/ASN 加权
 - `--no-cn-dns-check`：关闭国内公共 DNS 预检查
@@ -73,8 +75,8 @@ chmod +x reality-sni-bench.sh
 
 脚本分三层优选：
 
-1. 候选池预筛：默认池优先放大厂 CDN、云边缘、静态资源、软件分发、更新服务和数据中心入口，避免泛泛的 `www` 首页域名。
-2. 大陆可达预筛：默认删除 Google、Meta、X、Discord、Docker、GitHub object/raw、npm、部分 Microsoft auth CDN 等大陆常见不可达或不稳定域名。一键脚本会清理旧 `candidates.txt`，主测试脚本也会把手动塞进去的同类域名直接丢弃。
+1. 候选池预筛：默认池只放国外大厂、云厂商、CDN、软件分发、更新服务和数据中心入口，例如 Cloudflare、Microsoft、Apple、AWS/Amazon、Adobe、Oracle、IBM、Intel、NVIDIA、Cisco、Dell、HP、VMware、Mozilla、Akamai/Fastly、Steam/Epic。避免国内 CDN、随机小 SaaS 和泛泛的 `www` 首页域名。
+2. 大陆可达预筛：默认删除 Google、Meta、X、Discord、Docker、GitHub object/raw、npm、部分 Microsoft auth CDN 等大陆常见不可达或不稳定域名。一键脚本也会把旧版候选池里的国内 CDN、普通 SaaS 和旧 `www` 默认项清掉；主测试脚本会把手动塞进去的同类高风险域名直接丢弃。
 3. 国内 DNS 预检查：默认用阿里 DNS、DNSPod、百度 DNS、114 DNS 做 A/AAAA 解析预检。国内公共 DNS 都解析不到的候选不进榜，避免 VPS 自己能连但国内客户端明显不合适。
 4. 硬指标筛选：Reality 的 SNI 必须像正常 HTTPS 站点，所以先看 TLS 1.3、证书链/主机名校验、HTTPS 成功率、ALPN、握手耗时和 DNS 发散程度。`200/204/30x` 比 `401/403/404` 更优，`400` 这类认证接口根路径不再高分。
 5. 地域/ASN 加权：脚本会检测 VPS 本机出口 IP，再对候选实际连接到的 `remote_ip` 做地理和 ASN 查询。优先级是同 ASN/同机房网络 > 同城市 > 同区域 > 同国家。结果会写入 `geo_bonus` 和 `geo_match`。

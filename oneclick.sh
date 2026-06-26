@@ -8,10 +8,12 @@ MODE="${MODE:-both}"
 ROUNDS="${ROUNDS:-3}"
 TIMEOUT="${TIMEOUT:-8}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-4}"
+PARALLEL="${PARALLEL:-8}"
 TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
 GEO_AWARE="${GEO_AWARE:-1}"
 CN_DNS_CHECK="${CN_DNS_CHECK:-1}"
+FULL_TLS_PROBE="${FULL_TLS_PROBE:-0}"
 SKIP_INSTALL=0
 ASSUME_YES=0
 INTERACTIVE=0
@@ -33,10 +35,12 @@ Options:
   -r, --rounds NUM         test rounds per domain, default: 3
   -t, --timeout SEC        total timeout per probe, default: 8
   -c, --connect-timeout S  curl connect timeout, default: 4
+  -p, --parallel NUM       concurrent domain/family probes, default: 8
   -n, --top NUM            print top N results, default: 10
   --no-strict              do not require TLS 1.3 + certificate verification
   --no-geo                 disable source/edge IP region and ASN scoring bonus
   --no-cn-dns-check        disable mainland public DNS precheck
+  --full-tls-probe         also run the older openssl ALPN probe for each candidate
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory
   --interactive            ask for custom domains and mode
@@ -178,7 +182,10 @@ filter_candidate_file() {
       return tolower(d)
     }
     function old_default(d) {
-      return d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/
+      return (d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/ ||
+              d ~ /(alicdn\.com|aliyun\.com|tencent-cloud\.com|cloud\.tencent\.com|gtimg\.(com|cn)|qq\.com|bdstatic\.com|baidu\.com|bytecdntp\.com|bytednsdoc\.com|douyinstatic\.com|hc-cdn\.cn|huawei\.com|huaweicloud\.com|bootcdn\.net|baomitu\.com|qhres2\.com|kujiale\.com)/ ||
+              d ~ /(shopify\.com|shopifycdn\.net|zdassets\.com|zendesk\.com|hsforms\.net|hs-analytics\.net|cookielaw\.org)/ ||
+              d == "community.akamai.steamstatic.com")
     }
     function cn_risky(d) {
       return d ~ /(google|gstatic\.com|googleapis\.com|googleusercontent\.com|gvt1\.com|gcr\.io|facebook|fbcdn\.net|twitter\.com|twimg\.com|^x\.com$|discordapp\.com|discord\.com|docker\.com|docker\.io|githubassets\.com|githubusercontent\.com|github\.com|npmjs\.org|unpkg\.com|nodejs\.org|rust-lang\.org|crates\.io|pypi\.org|pythonhosted\.org|slack-edge\.com|segment\.com|stripe\.com|stripe\.network|aadcdn\.msauth\.net|aadcdn\.msftauth\.net|acctcdn\.msauth\.net)/
@@ -218,7 +225,10 @@ ensure_candidates() {
       return tolower(d)
     }
     function old_default(d) {
-      return d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/
+      return (d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/ ||
+              d ~ /(alicdn\.com|aliyun\.com|tencent-cloud\.com|cloud\.tencent\.com|gtimg\.(com|cn)|qq\.com|bdstatic\.com|baidu\.com|bytecdntp\.com|bytednsdoc\.com|douyinstatic\.com|hc-cdn\.cn|huawei\.com|huaweicloud\.com|bootcdn\.net|baomitu\.com|qhres2\.com|kujiale\.com)/ ||
+              d ~ /(shopify\.com|shopifycdn\.net|zdassets\.com|zendesk\.com|hsforms\.net|hs-analytics\.net|cookielaw\.org)/ ||
+              d == "community.akamai.steamstatic.com")
     }
     function cn_risky(d) {
       return d ~ /(google|gstatic\.com|googleapis\.com|googleusercontent\.com|gvt1\.com|gcr\.io|facebook|fbcdn\.net|twitter\.com|twimg\.com|^x\.com$|discordapp\.com|discord\.com|docker\.com|docker\.io|githubassets\.com|githubusercontent\.com|github\.com|npmjs\.org|unpkg\.com|nodejs\.org|rust-lang\.org|crates\.io|pypi\.org|pythonhosted\.org|slack-edge\.com|segment\.com|stripe\.com|stripe\.network|aadcdn\.msauth\.net|aadcdn\.msftauth\.net|acctcdn\.msauth\.net)/
@@ -343,6 +353,7 @@ run_bench() {
   local strict_arg=()
   local geo_arg=()
   local cn_dns_arg=()
+  local full_tls_arg=()
   if [[ "$STRICT" =~ ^(1|true|yes|y)$ ]]; then
     strict_arg=(--strict)
   fi
@@ -352,18 +363,23 @@ run_bench() {
   if [[ ! "$CN_DNS_CHECK" =~ ^(1|true|yes|y)$ ]]; then
     cn_dns_arg=(--no-cn-dns-check)
   fi
+  if [[ "$FULL_TLS_PROBE" =~ ^(1|true|yes|y)$ ]]; then
+    full_tls_arg=(--full-tls-probe)
+  fi
 
-  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS"
+  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS parallel=$PARALLEL"
   ./reality-sni-bench.sh \
     -f candidates.txt \
     -m "$MODE" \
     -r "$ROUNDS" \
     -t "$TIMEOUT" \
     -c "$CONNECT_TIMEOUT" \
+    -p "$PARALLEL" \
     -n "$TOP_N" \
     "${strict_arg[@]}" \
     "${geo_arg[@]}" \
-    "${cn_dns_arg[@]}"
+    "${cn_dns_arg[@]}" \
+    "${full_tls_arg[@]}"
 
   echo
   echo "Done."
@@ -381,10 +397,12 @@ while [[ $# -gt 0 ]]; do
     -r|--rounds) ROUNDS=${2:?}; shift 2 ;;
     -t|--timeout) TIMEOUT=${2:?}; shift 2 ;;
     -c|--connect-timeout) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
+    -p|--parallel) PARALLEL=${2:?}; shift 2 ;;
     -n|--top) TOP_N=${2:?}; shift 2 ;;
     --no-strict) STRICT=0; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
+    --full-tls-probe) FULL_TLS_PROBE=1; shift ;;
     --no-install) SKIP_INSTALL=1; shift ;;
     --install-dir) INSTALL_DIR=${2:?}; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
