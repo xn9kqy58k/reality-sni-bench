@@ -4,7 +4,7 @@
 
 ## 一键运行
 
-默认不再弹交互菜单，复制就跑，直接测 IPv4 + IPv6：
+默认不再弹交互菜单，复制就跑，使用快跑配置测 IPv4 + IPv6：前 25 个候选、每个 1 轮、不开 geo。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh)
@@ -39,12 +39,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 - `--ipv4`：只测 IPv4
 - `--ipv6`：只测 IPv6
 - `--dual` / `--both`：IPv4 + IPv6 都测，默认值
-- `--rounds 5`：每个域名测试 5 轮，默认 3 轮
-- `--parallel 8`：并发测试域名/地址族数量，默认 8；网络很弱时可调低，VPS 性能好时可调高
+- `--rounds 5`：每个域名测试 5 轮；一键脚本默认 1 轮
+- `--limit 25`：限制候选域名数量；一键脚本默认 25，`--limit 0` 表示测全部
+- `--parallel 12`：并发测试域名/地址族数量；一键脚本默认 12，网络很弱时可调低
+- `--full`：完整慢测，等价于全部候选 + 3 轮 + geo 加权
 - `--add example.com`：追加一个候选域名，可重复写多次
 - `--full-tls-probe`：额外启用旧版 openssl ALPN 探测；更细但更慢
 - `--no-strict`：不强制 TLS 1.3 + 证书校验通过
-- `--no-geo`：关闭本机出口和候选边缘 IP 的地区/ASN 加权
+- `--geo`：开启本机出口和候选边缘 IP 的地区/ASN 加权；一键脚本默认关闭，避免首次运行大量外部查询
+- `--no-geo`：关闭 geo 加权
 - `--no-cn-dns-check`：关闭国内公共 DNS 预检查
 - `--install-dir /opt/reality-sni-bench`：指定安装目录
 
@@ -53,7 +56,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --ipv4 --rounds 5
 curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --ipv6 --rounds 5
-curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --dual --rounds 5
+curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh | bash -s -- --dual --full
 ```
 
 ## 手动运行

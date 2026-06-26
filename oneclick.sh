@@ -5,13 +5,14 @@ REPO_URL="${REPO_URL:-https://github.com/xn9kqy58k/reality-sni-bench.git}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main}"
 INSTALL_DIR="${INSTALL_DIR:-}"
 MODE="${MODE:-both}"
-ROUNDS="${ROUNDS:-3}"
-TIMEOUT="${TIMEOUT:-8}"
-CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-4}"
-PARALLEL="${PARALLEL:-8}"
+ROUNDS="${ROUNDS:-1}"
+TIMEOUT="${TIMEOUT:-6}"
+CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-3}"
+PARALLEL="${PARALLEL:-12}"
+MAX_CANDIDATES="${MAX_CANDIDATES:-25}"
 TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
-GEO_AWARE="${GEO_AWARE:-1}"
+GEO_AWARE="${GEO_AWARE:-0}"
 CN_DNS_CHECK="${CN_DNS_CHECK:-1}"
 FULL_TLS_PROBE="${FULL_TLS_PROBE:-0}"
 SKIP_INSTALL=0
@@ -32,13 +33,16 @@ Options:
   -6, --ipv6               test IPv6 only
   --dual, --both           test IPv4 + IPv6, default
   --add DOMAIN             append one candidate SNI domain before testing
-  -r, --rounds NUM         test rounds per domain, default: 3
-  -t, --timeout SEC        total timeout per probe, default: 8
-  -c, --connect-timeout S  curl connect timeout, default: 4
-  -p, --parallel NUM       concurrent domain/family probes, default: 8
+  -r, --rounds NUM         test rounds per domain, default: 1
+  -t, --timeout SEC        total timeout per probe, default: 6
+  -c, --connect-timeout S  curl connect timeout, default: 3
+  -p, --parallel NUM       concurrent domain/family probes, default: 12
+  -l, --limit NUM          candidate domain limit, default: 25; 0 means all
   -n, --top NUM            print top N results, default: 10
+  --full                   run the full slower profile: all candidates, 3 rounds, geo on
   --no-strict              do not require TLS 1.3 + certificate verification
-  --no-geo                 disable source/edge IP region and ASN scoring bonus
+  --geo                    enable source/edge IP region and ASN scoring bonus
+  --no-geo                 disable geo scoring, default
   --no-cn-dns-check        disable mainland public DNS precheck
   --full-tls-probe         also run the older openssl ALPN probe for each candidate
   --no-install             skip dependency installation
@@ -50,9 +54,10 @@ Options:
 Examples:
   bash oneclick.sh
   bash oneclick.sh --ipv4
-  bash oneclick.sh --ipv6 --rounds 5
+  bash oneclick.sh --ipv6 --rounds 3 --limit 0
+  bash oneclick.sh --full
   bash oneclick.sh --add www.cloudflare.com --add www.microsoft.com
-  MODE=ipv6 ROUNDS=5 bash oneclick.sh
+  MODE=ipv6 ROUNDS=3 MAX_CANDIDATES=0 bash oneclick.sh
 EOF
 }
 
@@ -101,9 +106,17 @@ install_deps() {
 
   local missing=()
   local cmd
-  for cmd in curl openssl awk sed sort timeout tr git python3; do
+  for cmd in curl awk sed sort tr git; do
     has_cmd "$cmd" || missing+=("$cmd")
   done
+  if [[ "$FULL_TLS_PROBE" =~ ^(1|true|yes|y)$ ]]; then
+    for cmd in openssl timeout; do
+      has_cmd "$cmd" || missing+=("$cmd")
+    done
+  fi
+  if [[ "$GEO_AWARE" =~ ^(1|true|yes|y)$ ]]; then
+    has_cmd python3 || missing+=("python3")
+  fi
 
   if has_cmd dig || has_cmd getent; then
     :
@@ -143,14 +156,19 @@ ensure_project() {
 
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     log "Updating $INSTALL_DIR"
-    if ! git -C "$INSTALL_DIR" pull --ff-only; then
+    if ! git -C "$INSTALL_DIR" diff --quiet || ! git -C "$INSTALL_DIR" diff --cached --quiet; then
       local backup_patch
       backup_patch="$INSTALL_DIR/local-changes-$(date +%Y%m%d-%H%M%S).patch"
-      log "Update blocked by local tracked-file changes. Backing them up to $backup_patch"
+      log "Local tracked-file changes found. Backing them up to $backup_patch"
       git -C "$INSTALL_DIR" diff >"$backup_patch" || true
+      git -C "$INSTALL_DIR" diff --cached >>"$backup_patch" || true
       git -C "$INSTALL_DIR" fetch origin main
       git -C "$INSTALL_DIR" reset --hard origin/main
       log "Synced tracked files to origin/main. candidates.txt is kept."
+    elif ! git -C "$INSTALL_DIR" pull --ff-only; then
+      log "Fast-forward update failed. Syncing tracked files to origin/main."
+      git -C "$INSTALL_DIR" fetch origin main
+      git -C "$INSTALL_DIR" reset --hard origin/main
     fi
   elif has_cmd git; then
     log "Cloning $REPO_URL to $INSTALL_DIR"
@@ -367,7 +385,7 @@ run_bench() {
     full_tls_arg=(--full-tls-probe)
   fi
 
-  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS parallel=$PARALLEL"
+  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS parallel=$PARALLEL limit=$MAX_CANDIDATES geo=$GEO_AWARE"
   ./reality-sni-bench.sh \
     -f candidates.txt \
     -m "$MODE" \
@@ -375,6 +393,7 @@ run_bench() {
     -t "$TIMEOUT" \
     -c "$CONNECT_TIMEOUT" \
     -p "$PARALLEL" \
+    -l "$MAX_CANDIDATES" \
     -n "$TOP_N" \
     "${strict_arg[@]}" \
     "${geo_arg[@]}" \
@@ -398,8 +417,11 @@ while [[ $# -gt 0 ]]; do
     -t|--timeout) TIMEOUT=${2:?}; shift 2 ;;
     -c|--connect-timeout) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
     -p|--parallel) PARALLEL=${2:?}; shift 2 ;;
+    -l|--limit) MAX_CANDIDATES=${2:?}; shift 2 ;;
     -n|--top) TOP_N=${2:?}; shift 2 ;;
+    --full) ROUNDS=3; TIMEOUT=8; CONNECT_TIMEOUT=4; PARALLEL=8; MAX_CANDIDATES=0; GEO_AWARE=1; shift ;;
     --no-strict) STRICT=0; shift ;;
+    --geo) GEO_AWARE=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
     --full-tls-probe) FULL_TLS_PROBE=1; shift ;;

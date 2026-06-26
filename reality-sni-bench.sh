@@ -6,6 +6,7 @@ ROUNDS=3
 TIMEOUT=8
 CONNECT_TIMEOUT=4
 PARALLEL="${PARALLEL:-8}"
+MAX_CANDIDATES="${MAX_CANDIDATES:-0}"
 INPUT_FILE="candidates.txt"
 OUT_CSV="reality-sni-report.csv"
 OUT_SNIPPET="reality-best-snippet.json"
@@ -41,6 +42,7 @@ Options:
   -t SEC     Total timeout for each curl/openssl probe. Default: 8
   -c SEC     Curl connect timeout. Default: 4
   -p NUM     Concurrent domain/family probes. Default: 8
+  -l NUM     Limit candidate domains after filtering. Default: all
   -o FILE    Output CSV path. Default: reality-sni-report.csv
   -s FILE    Output best Reality snippet path. Default: reality-best-snippet.json
   -n NUM     Print top N results. Default: 10
@@ -524,6 +526,7 @@ while [[ $# -gt 0 ]]; do
     -t) TIMEOUT=${2:?}; shift 2 ;;
     -c) CONNECT_TIMEOUT=${2:?}; shift 2 ;;
     -p) PARALLEL=${2:?}; shift 2 ;;
+    -l|--limit) MAX_CANDIDATES=${2:?}; shift 2 ;;
     -o) OUT_CSV=${2:?}; shift 2 ;;
     -s) OUT_SNIPPET=${2:?}; shift 2 ;;
     -n) TOP_N=${2:?}; shift 2 ;;
@@ -545,6 +548,11 @@ fi
 
 if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [[ "$PARALLEL" -lt 1 ]]; then
   echo "Invalid parallel value: $PARALLEL. Use a positive integer." >&2
+  exit 1
+fi
+
+if ! [[ "$MAX_CANDIDATES" =~ ^[0-9]+$ ]]; then
+  echo "Invalid candidate limit: $MAX_CANDIDATES. Use 0 for all, or a positive integer." >&2
   exit 1
 fi
 
@@ -598,13 +606,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 done <"$INPUT_FILE"
 
-if [[ ${#DOMAINS[@]} -gt 0 ]]; then
-  mapfile -t DOMAINS < <(printf '%s\n' "${DOMAINS[@]}" | sort -u)
-fi
-
 if [[ ${#DOMAINS[@]} -eq 0 ]]; then
   echo "No candidate domains found in $INPUT_FILE" >&2
   exit 1
+fi
+
+if [[ "$MAX_CANDIDATES" -gt 0 && ${#DOMAINS[@]} -gt "$MAX_CANDIDATES" ]]; then
+  DOMAINS=("${DOMAINS[@]:0:$MAX_CANDIDATES}")
 fi
 
 if [[ "$MODE" == "both" ]]; then
