@@ -16,7 +16,7 @@ MODE="both"
 GEO_AWARE=1
 GEO_PREFILTER="${GEO_PREFILTER:-0}"
 CN_DNS_CHECK=1
-MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-2}"
+MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
 CN_DNS_TIMEOUT="${CN_DNS_TIMEOUT:-1}"
@@ -943,7 +943,7 @@ probe_candidate() {
     base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_score" "$ip_count")
     score=$(apply_geo_bonus "$base_score" "$((geo_bonus + cn_dns_bonus))")
     if [[ $CN_DNS_CHECK -eq 1 && $dns_primary_ok -ne 1 ]]; then
-      score=$(cap_score "$score" 84)
+      score=$(cap_score "$score" 89)
     fi
   fi
 
@@ -1096,6 +1096,6 @@ awk -F',' 'NR==1 { next } {
 }
 END {
   if (count == 0) {
-    print "No suitable SNI domains found. Try --limit 0, --no-cn-dns-check, or add your own candidates with --add."
+    print "No suitable SNI domains found. Try --limit 0, --geo, --no-cn-dns-check, or add your own candidates with --add."
   }
 }' n="$TOP_N" "$OUT_CSV"
