@@ -13,6 +13,8 @@ MAX_CANDIDATES="${MAX_CANDIDATES:-25}"
 TOP_N="${TOP_N:-10}"
 STRICT="${STRICT:-1}"
 GEO_AWARE="${GEO_AWARE:-0}"
+GEO_PREFILTER="${GEO_PREFILTER:-1}"
+GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-2}"
 CN_DNS_CHECK="${CN_DNS_CHECK:-1}"
 FULL_TLS_PROBE="${FULL_TLS_PROBE:-0}"
 SKIP_INSTALL=0
@@ -41,6 +43,8 @@ Options:
   -n, --top NUM            print top N results, default: 10
   --full                   run the full slower profile: all candidates, 3 rounds, geo on
   --no-strict              do not require TLS 1.3 + certificate verification
+  --geo-prefilter          prefer same ASN/region/country candidates before testing, default
+  --no-geo-prefilter       disable same-region prefiltering
   --geo                    enable source/edge IP region and ASN scoring bonus
   --no-geo                 disable geo scoring, default
   --no-cn-dns-check        disable mainland public DNS precheck
@@ -114,7 +118,7 @@ install_deps() {
       has_cmd "$cmd" || missing+=("$cmd")
     done
   fi
-  if [[ "$GEO_AWARE" =~ ^(1|true|yes|y)$ ]]; then
+  if [[ "$GEO_AWARE" =~ ^(1|true|yes|y)$ || "$GEO_PREFILTER" =~ ^(1|true|yes|y)$ ]]; then
     has_cmd python3 || missing+=("python3")
   fi
 
@@ -370,6 +374,7 @@ run_bench() {
 
   local strict_arg=()
   local geo_arg=()
+  local geo_prefilter_arg=()
   local cn_dns_arg=()
   local full_tls_arg=()
   if [[ "$STRICT" =~ ^(1|true|yes|y)$ ]]; then
@@ -378,6 +383,11 @@ run_bench() {
   if [[ ! "$GEO_AWARE" =~ ^(1|true|yes|y)$ ]]; then
     geo_arg=(--no-geo)
   fi
+  if [[ "$GEO_PREFILTER" =~ ^(1|true|yes|y)$ ]]; then
+    geo_prefilter_arg=(--geo-prefilter)
+  else
+    geo_prefilter_arg=(--no-geo-prefilter)
+  fi
   if [[ ! "$CN_DNS_CHECK" =~ ^(1|true|yes|y)$ ]]; then
     cn_dns_arg=(--no-cn-dns-check)
   fi
@@ -385,8 +395,8 @@ run_bench() {
     full_tls_arg=(--full-tls-probe)
   fi
 
-  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS parallel=$PARALLEL limit=$MAX_CANDIDATES geo=$GEO_AWARE"
-  ./reality-sni-bench.sh \
+  log "Running Reality SNI bench: mode=$MODE rounds=$ROUNDS parallel=$PARALLEL limit=$MAX_CANDIDATES geo=$GEO_AWARE geo_prefilter=$GEO_PREFILTER"
+  GEO_API_TIMEOUT="$GEO_API_TIMEOUT" ./reality-sni-bench.sh \
     -f candidates.txt \
     -m "$MODE" \
     -r "$ROUNDS" \
@@ -397,6 +407,7 @@ run_bench() {
     -n "$TOP_N" \
     "${strict_arg[@]}" \
     "${geo_arg[@]}" \
+    "${geo_prefilter_arg[@]}" \
     "${cn_dns_arg[@]}" \
     "${full_tls_arg[@]}"
 
@@ -419,8 +430,10 @@ while [[ $# -gt 0 ]]; do
     -p|--parallel) PARALLEL=${2:?}; shift 2 ;;
     -l|--limit) MAX_CANDIDATES=${2:?}; shift 2 ;;
     -n|--top) TOP_N=${2:?}; shift 2 ;;
-    --full) ROUNDS=3; TIMEOUT=8; CONNECT_TIMEOUT=4; PARALLEL=8; MAX_CANDIDATES=0; GEO_AWARE=1; shift ;;
+    --full) ROUNDS=3; TIMEOUT=8; CONNECT_TIMEOUT=4; PARALLEL=8; MAX_CANDIDATES=0; GEO_AWARE=1; GEO_PREFILTER=0; GEO_API_TIMEOUT=4; shift ;;
     --no-strict) STRICT=0; shift ;;
+    --geo-prefilter) GEO_PREFILTER=1; shift ;;
+    --no-geo-prefilter) GEO_PREFILTER=0; shift ;;
     --geo) GEO_AWARE=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;

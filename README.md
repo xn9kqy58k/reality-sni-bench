@@ -4,7 +4,7 @@
 
 ## 一键运行
 
-默认不再弹交互菜单，复制就跑，使用快跑配置测 IPv4 + IPv6：前 25 个候选、每个 1 轮、不开 geo。
+默认不再弹交互菜单，复制就跑。脚本会先检测当前 VPS 出口地区/ASN，优先挑同 ASN、同城市、同地区或同国家的候选，再用快跑配置测 IPv4 + IPv6：前 25 个候选、每个 1 轮、不开最终 geo 加分。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/main/oneclick.sh)
@@ -46,6 +46,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 - `--add example.com`：追加一个候选域名，可重复写多次
 - `--full-tls-probe`：额外启用旧版 openssl ALPN 探测；更细但更慢
 - `--no-strict`：不强制 TLS 1.3 + 证书校验通过
+- `--geo-prefilter`：测试前按当前 VPS 出口 ASN/城市/地区/国家优先筛候选，一键脚本默认开启
+- `--no-geo-prefilter`：关闭测试前地区筛选，按候选文件顺序测试
 - `--geo`：开启本机出口和候选边缘 IP 的地区/ASN 加权；一键脚本默认关闭，避免首次运行大量外部查询
 - `--no-geo`：关闭 geo 加权
 - `--no-cn-dns-check`：关闭国内公共 DNS 预检查

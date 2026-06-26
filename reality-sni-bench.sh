@@ -14,6 +14,7 @@ TOP_N=10
 STRICT_TLS13=0
 MODE="both"
 GEO_AWARE=1
+GEO_PREFILTER="${GEO_PREFILTER:-0}"
 CN_DNS_CHECK=1
 MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
@@ -49,6 +50,10 @@ Options:
   -m MODE    Address family: both, ipv4, or ipv6. Default: both
   --strict   Keep only domains that pass TLS 1.3 + certificate verification.
   --no-geo   Disable source/edge IP region and ASN scoring bonus.
+  --geo-prefilter
+             Prefer candidates whose resolved edge IP is near the VPS before probing.
+  --no-geo-prefilter
+             Disable pre-probe geo candidate ordering.
   --no-cn-dns-check
              Disable mainland public DNS precheck.
   --full-tls-probe
@@ -75,6 +80,10 @@ need_cmd() {
 
 has_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+geo_lookup_enabled() {
+  [[ $GEO_AWARE -eq 1 || $GEO_PREFILTER -eq 1 ]]
 }
 
 csv_escape() {
@@ -376,7 +385,7 @@ lookup_ip_geo() {
   local ip=$1
   local cached result
 
-  if [[ $GEO_AWARE -ne 1 || -z "$ip" || ! "$ip" =~ ^[0-9a-fA-F:.]+$ ]]; then
+  if ! geo_lookup_enabled || [[ -z "$ip" || ! "$ip" =~ ^[0-9a-fA-F:.]+$ ]]; then
     printf '\t\t\t\t\n'
     return 0
   fi
@@ -434,11 +443,12 @@ PY
 }
 
 init_geo_context() {
-  [[ $GEO_AWARE -eq 1 ]] || return 0
+  geo_lookup_enabled || return 0
 
   if ! has_cmd python3; then
-    log "Geo scoring disabled: python3 not found"
+    log "Geo lookup disabled: python3 not found"
     GEO_AWARE=0
+    GEO_PREFILTER=0
     return 0
   fi
 
@@ -460,6 +470,189 @@ init_geo_context() {
       log "Source $family: $ip ${country:-unknown} ${region:-} ${city:-} ${asn:-} ${org:-}"
     fi
   done
+}
+
+prefetch_ip_geos() {
+  local records_file=$1
+  local ips_file missing_file results_file
+  local ip cached
+
+  geo_lookup_enabled || return 0
+  has_cmd python3 || return 0
+  [[ -s "$records_file" ]] || return 0
+
+  ips_file=$(mktemp)
+  missing_file=$(mktemp)
+  results_file=$(mktemp)
+
+  awk -F '\t' '{ print $4 }' "$records_file" | sort -u >"$ips_file"
+  while IFS= read -r ip; do
+    [[ -n "$ip" ]] || continue
+    cached=""
+    if [[ -f "$GEO_CACHE_FILE" ]]; then
+      cached=$(awk -F '\t' -v ip="$ip" '$1 == ip { print; exit }' "$GEO_CACHE_FILE" 2>/dev/null || true)
+    fi
+    [[ -n "$cached" ]] || printf '%s\n' "$ip" >>"$missing_file"
+  done <"$ips_file"
+
+  if [[ -s "$missing_file" ]]; then
+    python3 - "$GEO_API_TIMEOUT" "$missing_file" >"$results_file" <<'PY' || true
+import json
+import re
+import sys
+import urllib.request
+
+timeout = float(sys.argv[1])
+with open(sys.argv[2], encoding="utf-8") as handle:
+    ips = [line.strip() for line in handle if line.strip()]
+url = "http://ip-api.com/batch?fields=status,countryCode,regionName,city,as,asname,org,query"
+
+def clean(value):
+    return str(value or "").replace("\t", " ").replace("\n", " ").strip()
+
+def row(data):
+    as_text = clean(data.get("as"))
+    match = re.match(r"AS(\d+)", as_text)
+    asn = f"AS{match.group(1)}" if match else ""
+    org = clean(data.get("asname") or data.get("org") or re.sub(r"^AS\d+\s*", "", as_text))
+    fields = [
+        clean(data.get("query")),
+        clean(data.get("countryCode")),
+        clean(data.get("regionName")),
+        clean(data.get("city")),
+        asn,
+        org,
+    ]
+    return "\t".join(fields)
+
+for start in range(0, len(ips), 100):
+    chunk = ips[start:start + 100]
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(chunk).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            payload = json.load(response)
+    except Exception:
+        continue
+
+    for item in payload if isinstance(payload, list) else []:
+        if item.get("status") == "success" and item.get("query"):
+            print(row(item))
+PY
+    if [[ -s "$results_file" ]]; then
+      cat "$results_file" >>"$GEO_CACHE_FILE" 2>/dev/null || true
+    fi
+  fi
+
+  rm -f "$ips_file" "$missing_file" "$results_file"
+}
+
+geo_prefilter_candidates() {
+  [[ $GEO_PREFILTER -eq 1 ]] || return 0
+  geo_lookup_enabled || return 0
+
+  local records_file scored_file selected_file
+  local domain family ips ip order
+  local country region city asn org score note
+  local src_country src_region src_city src_asn src_org
+  local best current matched limit_count total_count
+
+  if [[ -z "${SOURCE_COUNTRIES[*]:-}${SOURCE_ASNS[*]:-}" ]]; then
+    log "Geo prefilter skipped: source geo is unavailable"
+    return 0
+  fi
+
+  records_file=$(mktemp)
+  scored_file=$(mktemp)
+  selected_file=$(mktemp)
+
+  order=0
+  for domain in "${DOMAINS[@]}"; do
+    order=$((order + 1))
+    for family in "${FAMILIES[@]}"; do
+      src_country=${SOURCE_COUNTRIES[$family]:-}
+      src_asn=${SOURCE_ASNS[$family]:-}
+      [[ -n "$src_country$src_asn" ]] || continue
+      ips=$(resolve_ips "$domain" "$family")
+      [[ -n "$ips" ]] || continue
+      ip=${ips%%|*}
+      is_valid_public_ip "$ip" || continue
+      printf '%s\t%s\t%s\t%s\n' "$order" "$domain" "$family" "$ip" >>"$records_file"
+    done
+  done
+
+  if [[ ! -s "$records_file" ]]; then
+    log "Geo prefilter skipped: no candidate DNS records"
+    rm -f "$records_file" "$scored_file" "$selected_file"
+    return 0
+  fi
+
+  prefetch_ip_geos "$records_file"
+
+  declare -A BEST_SCORES=()
+  declare -A BEST_NOTES=()
+
+  while IFS=$'\t' read -r order domain family ip; do
+    IFS=$'\t' read -r country region city asn org < <(lookup_ip_geo "$ip")
+    src_country=${SOURCE_COUNTRIES[$family]:-}
+    src_region=${SOURCE_REGIONS[$family]:-}
+    src_city=${SOURCE_CITIES[$family]:-}
+    src_asn=${SOURCE_ASNS[$family]:-}
+    src_org=${SOURCE_ORGS[$family]:-}
+    score=0
+    note=""
+
+    if [[ -n "$asn" && -n "$src_asn" && "$asn" == "$src_asn" ]]; then
+      score=$((score + 70))
+      note="${note}${note:+; }$family same ASN $asn"
+    elif [[ -n "$org" && -n "$src_org" && "${org,,}" == "${src_org,,}" ]]; then
+      score=$((score + 50))
+      note="${note}${note:+; }$family same org $org"
+    fi
+    if [[ -n "$country" && -n "$src_country" && "$country" == "$src_country" ]]; then
+      score=$((score + 20))
+      note="${note}${note:+; }same country $country"
+    fi
+    if [[ -n "$region" && -n "$src_region" && "${region,,}" == "${src_region,,}" ]]; then
+      score=$((score + 15))
+      note="${note}${note:+; }same region $region"
+    fi
+    if [[ -n "$city" && -n "$src_city" && "${city,,}" == "${src_city,,}" ]]; then
+      score=$((score + 15))
+      note="${note}${note:+; }same city $city"
+    fi
+
+    best=${BEST_SCORES[$domain]:-0}
+    if [[ $score -gt $best ]]; then
+      BEST_SCORES[$domain]=$score
+      BEST_NOTES[$domain]=$note
+    fi
+  done <"$records_file"
+
+  order=0
+  for domain in "${DOMAINS[@]}"; do
+    order=$((order + 1))
+    current=${BEST_SCORES[$domain]:-0}
+    printf '%s\t%s\t%s\t%s\n' "$current" "$order" "$domain" "${BEST_NOTES[$domain]:-}" >>"$scored_file"
+  done
+
+  if [[ "$MAX_CANDIDATES" -gt 0 ]]; then
+    sort -t "$(printf '\t')" -k1,1nr -k2,2n "$scored_file" | head -n "$MAX_CANDIDATES" >"$selected_file"
+  else
+    sort -t "$(printf '\t')" -k1,1nr -k2,2n "$scored_file" >"$selected_file"
+  fi
+
+  mapfile -t DOMAINS < <(awk -F '\t' '{ print $3 }' "$selected_file")
+  matched=$(awk -F '\t' '$1 > 0 { count++ } END { print count + 0 }' "$selected_file")
+  limit_count=${#DOMAINS[@]}
+  total_count=$(wc -l <"$scored_file" | tr -d ' ')
+  log "Geo prefilter selected ${limit_count}/${total_count} candidate domains (${matched} with same ASN/region/country signal)"
+
+  rm -f "$records_file" "$scored_file" "$selected_file"
 }
 
 geo_bonus_for_ip() {
@@ -533,6 +726,8 @@ while [[ $# -gt 0 ]]; do
     -m) MODE=${2:?}; shift 2 ;;
     --strict) STRICT_TLS13=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
+    --geo-prefilter) GEO_PREFILTER=1; shift ;;
+    --no-geo-prefilter) GEO_PREFILTER=0; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
     --full-tls-probe) FULL_TLS_PROBE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -553,6 +748,11 @@ fi
 
 if ! [[ "$MAX_CANDIDATES" =~ ^[0-9]+$ ]]; then
   echo "Invalid candidate limit: $MAX_CANDIDATES. Use 0 for all, or a positive integer." >&2
+  exit 1
+fi
+
+if ! [[ "$GEO_PREFILTER" =~ ^(0|1)$ ]]; then
+  echo "Invalid geo prefilter value: $GEO_PREFILTER. Use 0 or 1." >&2
   exit 1
 fi
 
@@ -611,10 +811,6 @@ if [[ ${#DOMAINS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "$MAX_CANDIDATES" -gt 0 && ${#DOMAINS[@]} -gt "$MAX_CANDIDATES" ]]; then
-  DOMAINS=("${DOMAINS[@]:0:$MAX_CANDIDATES}")
-fi
-
 if [[ "$MODE" == "both" ]]; then
   FAMILIES=(ipv4 ipv6)
 else
@@ -622,6 +818,11 @@ else
 fi
 
 init_geo_context
+geo_prefilter_candidates
+
+if [[ "$GEO_PREFILTER" -ne 1 && "$MAX_CANDIDATES" -gt 0 && ${#DOMAINS[@]} -gt "$MAX_CANDIDATES" ]]; then
+  DOMAINS=("${DOMAINS[@]:0:$MAX_CANDIDATES}")
+fi
 
 probe_candidate() {
   local domain=$1
