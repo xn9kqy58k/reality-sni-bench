@@ -10,13 +10,13 @@ MAX_CANDIDATES="${MAX_CANDIDATES:-0}"
 INPUT_FILE="candidates.txt"
 OUT_CSV="reality-sni-report.csv"
 OUT_SNIPPET="reality-best-snippet.json"
-TOP_N=10
+TOP_N=3
 STRICT_TLS13=0
 MODE="both"
 GEO_AWARE=1
 GEO_PREFILTER="${GEO_PREFILTER:-0}"
 CN_DNS_CHECK=1
-MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
+MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-2}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
 CN_DNS_TIMEOUT="${CN_DNS_TIMEOUT:-1}"
@@ -46,7 +46,7 @@ Options:
   -l NUM     Limit candidate domains after filtering. Default: all
   -o FILE    Output CSV path. Default: reality-sni-report.csv
   -s FILE    Output best Reality snippet path. Default: reality-best-snippet.json
-  -n NUM     Print top N results. Default: 10
+  -n NUM     Print top N suitable unique domains. Default: 3
   -m MODE    Address family: both, ipv4, or ipv6. Default: both
   --strict   Keep only domains that pass TLS 1.3 + certificate verification.
   --no-geo   Disable source/edge IP region and ASN scoring bonus.
@@ -362,6 +362,17 @@ apply_geo_bonus() {
     BEGIN {
       score = base + geo
       if (score > 100) score = 100
+      printf "%.1f", score
+    }'
+}
+
+cap_score() {
+  local score=$1
+  local cap=$2
+
+  awk -v score="$score" -v cap="$cap" '
+    BEGIN {
+      if (score > cap) score = cap
       printf "%.1f", score
     }'
 }
@@ -833,6 +844,7 @@ probe_candidate() {
   local success http_score total_appconnect last_code last_ip
   local code appconnect total remote_ip ssl_verify http_version app_ms avg_ms
   local geo_bonus geo_match base_score score decision reason
+  local dns_primary_ok=1
   local reason_parts=()
 
   log "Probe $domain over $family"
@@ -854,6 +866,9 @@ probe_candidate() {
     if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
       log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
       return 0
+    fi
+    if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt 2 ]]; then
+      dns_primary_ok=0
     fi
   fi
 
@@ -927,11 +942,14 @@ probe_candidate() {
   else
     base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_score" "$ip_count")
     score=$(apply_geo_bonus "$base_score" "$((geo_bonus + cn_dns_bonus))")
+    if [[ $CN_DNS_CHECK -eq 1 && $dns_primary_ok -ne 1 ]]; then
+      score=$(cap_score "$score" 84)
+    fi
   fi
 
   decision="AVOID"
   if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 95) }' \
-    && [[ $success -eq $ROUNDS && $tls13 -eq 1 && $verify_ok -eq 1 && $http_score -ge 4 ]]; then
+    && [[ $success -eq $ROUNDS && $tls13 -eq 1 && $verify_ok -eq 1 && $http_score -ge 4 && $dns_primary_ok -eq 1 ]]; then
     decision="PRIMARY"
   elif [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v s="$score" 'BEGIN { exit !(s >= 85) }' \
     && [[ $success -gt 0 && $tls13 -eq 1 && $verify_ok -eq 1 ]]; then
@@ -1053,11 +1071,13 @@ if [[ -n "${best_ipv4:-}" || -n "${best_ipv6:-}" ]]; then
 fi
 
 echo
-echo "Top ${TOP_N}:"
-awk -F',' 'NR==1 { next } NR<=n+1 {
+echo "Top ${TOP_N} suitable SNI domains:"
+awk -F',' 'NR==1 { next } {
   gsub(/^"|"$/, "", $3)
+  if (seen[$3]++) next
   decision=$5
   gsub(/^"|"$/, "", decision)
+  if (decision == "AVOID") next
   alpn=$11
   gsub(/^"|"$/, "", alpn)
   cn=$15
@@ -1070,5 +1090,12 @@ awk -F',' 'NR==1 { next } NR<=n+1 {
   suffix=""
   if (reason != "") suffix = suffix " " reason
   if (note != "") suffix = suffix " # " note
-  printf "%2s  %-7s %-5s %-36s score=%5s cn=%s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s%s\n", $1, decision, $2, $3, $4, cn, geo_bonus, $6, $7, $8, alpn, $12, suffix
+  count++
+  printf "%2s  %-7s best=%-5s %-36s score=%5s cn=%s geo+%s avg_tls=%sms success=%s/%s alpn=%s code=%s%s\n", count, decision, $2, $3, $4, cn, geo_bonus, $6, $7, $8, alpn, $12, suffix
+  if (count >= n) exit
+}
+END {
+  if (count == 0) {
+    print "No suitable SNI domains found. Try --limit 0, --no-cn-dns-check, or add your own candidates with --add."
+  }
 }' n="$TOP_N" "$OUT_CSV"

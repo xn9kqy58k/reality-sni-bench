@@ -10,7 +10,7 @@ TIMEOUT="${TIMEOUT:-6}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-3}"
 PARALLEL="${PARALLEL:-12}"
 MAX_CANDIDATES="${MAX_CANDIDATES:-25}"
-TOP_N="${TOP_N:-10}"
+TOP_N="${TOP_N:-3}"
 STRICT="${STRICT:-1}"
 GEO_AWARE="${GEO_AWARE:-0}"
 GEO_PREFILTER="${GEO_PREFILTER:-1}"
@@ -40,7 +40,7 @@ Options:
   -c, --connect-timeout S  curl connect timeout, default: 3
   -p, --parallel NUM       concurrent domain/family probes, default: 12
   -l, --limit NUM          candidate domain limit, default: 25; 0 means all
-  -n, --top NUM            print top N results, default: 10
+  -n, --top NUM            print top N suitable unique domains, default: 3
   --full                   run the full slower profile: all candidates, 3 rounds, geo on
   --no-strict              do not require TLS 1.3 + certificate verification
   --geo-prefilter          prefer same ASN/region/country candidates before testing, default
@@ -207,6 +207,7 @@ filter_candidate_file() {
       return (d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/ ||
               d ~ /(alicdn\.com|aliyun\.com|tencent-cloud\.com|cloud\.tencent\.com|gtimg\.(com|cn)|qq\.com|bdstatic\.com|baidu\.com|bytecdntp\.com|bytednsdoc\.com|douyinstatic\.com|hc-cdn\.cn|huawei\.com|huaweicloud\.com|bootcdn\.net|baomitu\.com|qhres2\.com|kujiale\.com)/ ||
               d ~ /(shopify\.com|shopifycdn\.net|zdassets\.com|zendesk\.com|hsforms\.net|hs-analytics\.net|cookielaw\.org)/ ||
+              d ~ /(awsstatic\.com|amazon\.com|aboutamazon\.com|media-amazon\.com|ssl-images-amazon\.com)/ ||
               d == "community.akamai.steamstatic.com")
     }
     function cn_risky(d) {
@@ -250,6 +251,7 @@ ensure_candidates() {
       return (d ~ /^(www\.cloudflare\.com|www\.microsoft\.com|www\.apple\.com|www\.mozilla\.org|www\.github\.com|www\.wikipedia\.org|www\.bing\.com|www\.ubuntu\.com|www\.debian\.org|www\.akamai\.com)$/ ||
               d ~ /(alicdn\.com|aliyun\.com|tencent-cloud\.com|cloud\.tencent\.com|gtimg\.(com|cn)|qq\.com|bdstatic\.com|baidu\.com|bytecdntp\.com|bytednsdoc\.com|douyinstatic\.com|hc-cdn\.cn|huawei\.com|huaweicloud\.com|bootcdn\.net|baomitu\.com|qhres2\.com|kujiale\.com)/ ||
               d ~ /(shopify\.com|shopifycdn\.net|zdassets\.com|zendesk\.com|hsforms\.net|hs-analytics\.net|cookielaw\.org)/ ||
+              d ~ /(awsstatic\.com|amazon\.com|aboutamazon\.com|media-amazon\.com|ssl-images-amazon\.com)/ ||
               d == "community.akamai.steamstatic.com")
     }
     function cn_risky(d) {

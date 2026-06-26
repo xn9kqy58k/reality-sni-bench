@@ -40,14 +40,6 @@ is1-ssl.mzstatic.com # Apple media CDN
 is2-ssl.mzstatic.com # Apple media CDN
 itunes.apple.com # Apple iTunes edge
 
-# AWS / Amazon
-a0.awsstatic.com # AWS static CDN
-d1.awsstatic.com # AWS static CDN
-aws.amazon.com # AWS edge
-assets.aboutamazon.com # Amazon asset CDN
-m.media-amazon.com # Amazon media CDN
-images-na.ssl-images-amazon.com # Amazon image CDN
-
 # Adobe / Oracle / IBM
 assets.adobedtm.com # Adobe static CDN
 ccmdl.adobe.com # Adobe download CDN
