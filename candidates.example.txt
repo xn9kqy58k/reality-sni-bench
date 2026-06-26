@@ -1,100 +1,95 @@
-# Candidate SNI domains. One domain per line. Inline comments are kept in the final ranking.
-# Default pool is mainland-China friendly first: large CDN, cloud edge, static assets,
-# software/update distribution, and domestic cloud CDN endpoints.
-# Commonly blocked or unstable domains are excluded by default.
+# Foreign big-vendor SNI candidates for VLESS/REALITY.
+# One domain per line. Keep only large foreign CDN/cloud/software/update edges.
 
-# Cloudflare edge / CDN, usually safer than social/search blocked domains
+# Cloudflare
 cloudflare-dns.com # Cloudflare anycast DNS edge
 speed.cloudflare.com # Cloudflare speed test edge
-cdnjs.cloudflare.com # Cloudflare cdnjs static CDN
-ajax.cloudflare.com # Cloudflare AJAX library CDN
-static.cloudflareinsights.com # Cloudflare telemetry/static edge
-challenges.cloudflare.com # Cloudflare challenge platform edge
+cdnjs.cloudflare.com # Cloudflare cdnjs CDN
+ajax.cloudflare.com # Cloudflare AJAX CDN
+static.cloudflareinsights.com # Cloudflare static edge
+challenges.cloudflare.com # Cloudflare challenge edge
 
-# Microsoft / Azure / Office CDN, excluding auth CDN domains that are red in mainland checks
+# Microsoft / Azure / Windows / Office
 officecdn.microsoft.com # Microsoft Office CDN
 res.cdn.office.net # Microsoft Office static CDN
 statics.teams.cdn.office.net # Microsoft Teams static CDN
-download.microsoft.com # Microsoft software download CDN
+download.microsoft.com # Microsoft download CDN
 download.visualstudio.microsoft.com # Visual Studio download CDN
-update.code.visualstudio.com # VS Code update service
+update.code.visualstudio.com # VS Code update edge
 vscode.download.prss.microsoft.com # VS Code download CDN
 ajax.aspnetcdn.com # Microsoft ASP.NET CDN
 assets.msn.com # Microsoft MSN asset CDN
-edge.microsoft.com # Microsoft Edge service edge
-msedge.api.cdp.microsoft.com # Microsoft Edge update API edge
+edge.microsoft.com # Microsoft Edge service
+msedge.api.cdp.microsoft.com # Microsoft Edge update API
+store-images.s-microsoft.com # Microsoft Store image CDN
+ctldl.windowsupdate.com # Windows Update cert/list CDN
+dl.delivery.mp.microsoft.com # Microsoft delivery CDN
+software.download.prss.microsoft.com # Microsoft software package CDN
 
-# Apple / Akamai-backed software distribution
+# Apple
 swcdn.apple.com # Apple software CDN
 updates.cdn-apple.com # Apple update CDN
 appldnld.apple.com # Apple download CDN
-mesu.apple.com # Apple software update catalog
+appldnld.g.aaplimg.com # Apple Akamai download CDN
+mesu.apple.com # Apple update catalog
 gdmf.apple.com # Apple device management catalog
-xp.apple.com # Apple telemetry/service edge
+xp.apple.com # Apple service edge
 ocsp.apple.com # Apple OCSP edge
 appleid.cdn-apple.com # Apple ID static CDN
-is1-ssl.mzstatic.com # Apple media static CDN
-is2-ssl.mzstatic.com # Apple media static CDN
-itunes.apple.com # Apple iTunes service edge
+is1-ssl.mzstatic.com # Apple media CDN
+is2-ssl.mzstatic.com # Apple media CDN
+itunes.apple.com # Apple iTunes edge
 
-# Akamai / enterprise software distribution
-assets.adobedtm.com # Adobe tag/static CDN
-ccmdl.adobe.com # Adobe Creative Cloud download CDN
+# AWS / Amazon
+a0.awsstatic.com # AWS static CDN
+d1.awsstatic.com # AWS static CDN
+aws.amazon.com # AWS edge
+assets.aboutamazon.com # Amazon asset CDN
+m.media-amazon.com # Amazon media CDN
+images-na.ssl-images-amazon.com # Amazon image CDN
+
+# Adobe / Oracle / IBM
+assets.adobedtm.com # Adobe static CDN
+ccmdl.adobe.com # Adobe download CDN
 armmf.adobe.com # Adobe media/download CDN
+use.typekit.net # Adobe Fonts CDN
 download.oracle.com # Oracle download CDN
 yum.oracle.com # Oracle Linux package CDN
-download.mozilla.org # Mozilla download redirector
+docs.oracle.com # Oracle docs edge
+public.dhe.ibm.com # IBM public download edge
+cloud.ibm.com # IBM Cloud edge
+
+# Intel / NVIDIA / Cisco / Dell / HP / VMware
+downloadmirror.intel.com # Intel download mirror
+registrationcenter-download.intel.com # Intel download CDN
+international.download.nvidia.com # NVIDIA download CDN
+developer.download.nvidia.com # NVIDIA developer CDN
+images.nvidia.com # NVIDIA static CDN
+software.cisco.com # Cisco software edge
+tools.cisco.com # Cisco tools edge
+dl.dell.com # Dell download CDN
+downloads.dell.com # Dell downloads edge
+support.hp.com # HP support edge
+packages.vmware.com # VMware package repo
+
+# Mozilla
+download.mozilla.org # Mozilla download edge
 archive.mozilla.org # Mozilla archive CDN
 addons.mozilla.org # Mozilla add-ons edge
-aus5.mozilla.org # Mozilla update service edge
+aus5.mozilla.org # Mozilla update edge
 
-# China and Asia large CDN / cloud edges
-g.alicdn.com # Alibaba Cloud static CDN
-img.alicdn.com # Alibaba image CDN
-at.alicdn.com # Alibaba iconfont/static CDN
-gw.alicdn.com # Alibaba gateway/static edge
-assets.alicdn.com # Alibaba asset CDN
-ae01.alicdn.com # Alibaba image/static CDN
-cloudcache.tencent-cloud.com # Tencent Cloud cache edge
-mat1.gtimg.com # Tencent static CDN
-vm.gtimg.cn # Tencent video/static CDN
-i.gtimg.cn # Tencent image CDN
-staticfile.qq.com # Tencent static library CDN
-js.aq.qq.com # Tencent security/static CDN
-qzonestyle.gtimg.cn # Tencent Qzone style CDN
-gss0.bdstatic.com # Baidu static CDN
-bce.bdstatic.com # Baidu Cloud static CDN
-passport.baidu.com # Baidu account edge
-sp0.baidu.com # Baidu static edge
-lf3-cdn-tos.bytecdntp.com # ByteDance CDN edge
-lf6-cdn-tos.bytecdntp.com # ByteDance CDN edge
-lf9-cdn-tos.bytecdntp.com # ByteDance CDN edge
-lf3-static.bytednsdoc.com # ByteDance static edge
-sf3-cdn-tos.douyinstatic.com # Douyin static CDN
-sf6-cdn-tos.douyinstatic.com # Douyin static CDN
-res-static.hc-cdn.cn # Huawei CDN static edge
-consumer-img.huawei.com # Huawei consumer image CDN
-repo.huaweicloud.com # Huawei Cloud mirror edge
-mirrors.huaweicloud.com # Huawei Cloud mirror edge
-mirrors.aliyun.com # Alibaba Cloud mirror edge
-mirrors.cloud.tencent.com # Tencent Cloud mirror edge
-cdn.bootcdn.net # BootCDN static libraries
-lib.baomitu.com # Qihoo 360 static library CDN
-s.ssl.qhres2.com # Qihoo 360 static CDN
-qhstaticssl.kujiale.com # Kujiale/Qiniu static CDN
+# Akamai / Fastly / CDN networks
+developer.akamai.com # Akamai developer edge
+techdocs.akamai.com # Akamai docs edge
+api.linode.com # Akamai/Linode cloud edge
+fastly.jsdelivr.net # jsDelivr on Fastly
+cdn.jsdelivr.net # jsDelivr CDN
+developer.fastly.com # Fastly developer edge
+global.ssl.fastly.net # Fastly shared edge
 
-# SaaS and commerce CDNs that are generally less sensitive than social/search domains
-cdn.shopify.com # Shopify CDN
-cdn.shopifycdn.net # Shopify static CDN
-static.zdassets.com # Zendesk static CDN
-assets.zendesk.com # Zendesk asset CDN
-js.hsforms.net # HubSpot forms CDN
-js.hs-analytics.net # HubSpot analytics CDN
-cdn.cookielaw.org # OneTrust CDN
-
-# Game / content distribution, generally CDN-style and not social/search
+# Game / content distribution
 steamcdn-a.akamaihd.net # Steam Akamai CDN
-cdn.akamai.steamstatic.com # Steam static Akamai CDN
-community.akamai.steamstatic.com # Steam community static CDN
-epicgames-download1.akamaized.net # Epic Games download Akamai CDN
+cdn.akamai.steamstatic.com # Steam static CDN
+media.steampowered.com # Steam media CDN
+epicgames-download1.akamaized.net # Epic Games Akamai CDN
 download.epicgames.com # Epic Games download CDN
