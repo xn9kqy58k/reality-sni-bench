@@ -16,7 +16,7 @@ MODE="both"
 GEO_AWARE=1
 GEO_PREFILTER="${GEO_PREFILTER:-0}"
 CN_DNS_CHECK=1
-MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-1}"
+MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-0}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
 CN_DNS_TIMEOUT="${CN_DNS_TIMEOUT:-1}"
@@ -55,7 +55,7 @@ Options:
   --no-geo-prefilter
              Disable pre-probe geo candidate ordering.
   --no-cn-dns-check
-             Disable mainland public DNS precheck.
+             Disable mainland public DNS scoring signal.
   --full-tls-probe
              Also run the older openssl ALPN probe for each candidate.
   -h         Show help.
@@ -863,7 +863,7 @@ probe_candidate() {
     elif [[ $cn_dns_ok -ge 1 ]]; then
       cn_dns_bonus=2
     fi
-    if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
+    if [[ $CN_DNS_CHECK -eq 1 && $MIN_CN_DNS_OK -gt 0 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
       log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
       return 0
     fi
@@ -1096,6 +1096,6 @@ awk -F',' 'NR==1 { next } {
 }
 END {
   if (count == 0) {
-    print "No suitable SNI domains found. Try --limit 0, --geo, --no-cn-dns-check, or add your own candidates with --add."
+    print "No suitable SNI domains found. Try --limit 0, --geo, or add your own candidates with --add."
   }
 }' n="$TOP_N" "$OUT_CSV"

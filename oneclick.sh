@@ -47,7 +47,7 @@ Options:
   --no-geo-prefilter       disable same-region prefiltering
   --geo                    enable source/edge IP region and ASN scoring bonus
   --no-geo                 disable geo scoring, default
-  --no-cn-dns-check        disable mainland public DNS precheck
+  --no-cn-dns-check        disable mainland public DNS scoring signal
   --full-tls-probe         also run the older openssl ALPN probe for each candidate
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory

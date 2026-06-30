@@ -43,7 +43,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xn9kqy58k/reality-sni-bench/
 - `--top 3`：只显示前三个适合的唯一域名
 - `--geo-prefilter` / `--no-geo-prefilter`：开启/关闭测试前地区筛选
 - `--geo` / `--no-geo`：开启/关闭最终地区 ASN 加分
-- `--no-cn-dns-check`：关闭国内公共 DNS 预检查
+- `--no-cn-dns-check`：关闭国内公共 DNS 评分信号
 - `--install-dir /opt/reality-sni-bench`：指定安装目录
 
 ## 输出文件
