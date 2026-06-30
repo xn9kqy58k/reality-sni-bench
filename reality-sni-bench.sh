@@ -15,13 +15,14 @@ STRICT_TLS13=0
 MODE="both"
 GEO_AWARE=1
 GEO_PREFILTER="${GEO_PREFILTER:-0}"
-CN_DNS_CHECK=1
+CN_DNS_CHECK="${CN_DNS_CHECK:-auto}"
 MIN_CN_DNS_OK="${MIN_CN_DNS_OK:-0}"
 GEO_CACHE_FILE="${GEO_CACHE_FILE:-.reality-sni-geo-cache.tsv}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-4}"
 CN_DNS_TIMEOUT="${CN_DNS_TIMEOUT:-1}"
 FULL_TLS_PROBE="${FULL_TLS_PROBE:-0}"
 CN_DNS_RESOLVERS=("223.5.5.5" "119.29.29.29" "180.76.76.76" "114.114.114.114")
+CN_DNS_TEST_DOMAINS=("apple.com" "microsoft.com")
 
 declare -A SOURCE_IPS=()
 declare -A SOURCE_COUNTRIES=()
@@ -29,6 +30,7 @@ declare -A SOURCE_REGIONS=()
 declare -A SOURCE_CITIES=()
 declare -A SOURCE_ASNS=()
 declare -A SOURCE_ORGS=()
+declare -A CN_DNS_FAMILY_CHECK=()
 
 usage() {
   cat <<'EOF'
@@ -54,8 +56,10 @@ Options:
              Prefer candidates whose resolved edge IP is near the VPS before probing.
   --no-geo-prefilter
              Disable pre-probe geo candidate ordering.
+  --cn-dns-check
+             Force mainland public DNS scoring signal.
   --no-cn-dns-check
-             Disable mainland public DNS scoring signal.
+             Disable mainland public DNS scoring signal. Default: auto.
   --full-tls-probe
              Also run the older openssl ALPN probe for each candidate.
   -h         Show help.
@@ -183,6 +187,75 @@ is_valid_public_ip() {
   return 1
 }
 
+cn_dns_enabled_for_family() {
+  local family=$1
+  [[ "${CN_DNS_FAMILY_CHECK[$family]:-0}" == "1" ]]
+}
+
+cn_dns_signal_available_for_family() {
+  local family=$1
+  local qtype="A"
+  local resolver domain answer
+  local test_domains=()
+
+  [[ "$family" == "ipv6" ]] && qtype="AAAA"
+  has_cmd dig || return 1
+
+  if [[ ${#DOMAINS[@]} -gt 0 ]]; then
+    for domain in "${DOMAINS[@]}"; do
+      test_domains+=("$domain")
+      [[ ${#test_domains[@]} -ge 3 ]] && break
+    done
+  else
+    test_domains=("${CN_DNS_TEST_DOMAINS[@]}")
+  fi
+
+  for resolver in "${CN_DNS_RESOLVERS[@]}"; do
+    for domain in "${test_domains[@]}"; do
+      while IFS= read -r answer; do
+        if is_valid_public_ip "$answer"; then
+          return 0
+        fi
+      done < <(dig @"$resolver" +short "$qtype" "$domain" +time="$CN_DNS_TIMEOUT" +tries=1 2>/dev/null | grep -E '^[0-9a-fA-F:.]+$' || true)
+    done
+  done
+
+  return 1
+}
+
+init_cn_dns_signal() {
+  local mode="${CN_DNS_CHECK,,}"
+  local family
+
+  case "$mode" in
+    1|true|yes|y|on)
+      for family in "${FAMILIES[@]}"; do
+        CN_DNS_FAMILY_CHECK[$family]=1
+      done
+      ;;
+    0|false|no|n|off)
+      for family in "${FAMILIES[@]}"; do
+        CN_DNS_FAMILY_CHECK[$family]=0
+      done
+      ;;
+    auto)
+      for family in "${FAMILIES[@]}"; do
+        if cn_dns_signal_available_for_family "$family"; then
+          CN_DNS_FAMILY_CHECK[$family]=1
+          log "CN DNS signal enabled for $family"
+        else
+          CN_DNS_FAMILY_CHECK[$family]=0
+          log "CN DNS signal unavailable for $family from this VPS; scoring without cn-dns cap"
+        fi
+      done
+      ;;
+    *)
+      echo "Invalid CN_DNS_CHECK value: $CN_DNS_CHECK. Use auto, 1, or 0." >&2
+      exit 1
+      ;;
+  esac
+}
+
 cn_dns_probe() {
   local domain=$1
   local family=$2
@@ -192,7 +265,7 @@ cn_dns_probe() {
 
   [[ "$family" == "ipv6" ]] && qtype="AAAA"
 
-  if [[ $CN_DNS_CHECK -ne 1 ]] || ! has_cmd dig; then
+  if ! cn_dns_enabled_for_family "$family" || ! has_cmd dig; then
     printf 'skip\tcn-dns skipped\n'
     return 0
   fi
@@ -739,6 +812,7 @@ while [[ $# -gt 0 ]]; do
     --no-geo) GEO_AWARE=0; shift ;;
     --geo-prefilter) GEO_PREFILTER=1; shift ;;
     --no-geo-prefilter) GEO_PREFILTER=0; shift ;;
+    --cn-dns-check) CN_DNS_CHECK=1; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
     --full-tls-probe) FULL_TLS_PROBE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -835,6 +909,8 @@ if [[ "$GEO_PREFILTER" -ne 1 && "$MAX_CANDIDATES" -gt 0 && ${#DOMAINS[@]} -gt "$
   DOMAINS=("${DOMAINS[@]:0:$MAX_CANDIDATES}")
 fi
 
+init_cn_dns_signal
+
 probe_candidate() {
   local domain=$1
   local family=$2
@@ -863,11 +939,11 @@ probe_candidate() {
     elif [[ $cn_dns_ok -ge 1 ]]; then
       cn_dns_bonus=2
     fi
-    if [[ $CN_DNS_CHECK -eq 1 && $MIN_CN_DNS_OK -gt 0 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
+    if cn_dns_enabled_for_family "$family" && [[ $MIN_CN_DNS_OK -gt 0 && $cn_dns_ok -lt $MIN_CN_DNS_OK ]]; then
       log "Skip CN-DNS-failed domain: $domain over $family ($cn_dns_note)"
       return 0
     fi
-    if [[ $CN_DNS_CHECK -eq 1 && $cn_dns_ok -lt 2 ]]; then
+    if cn_dns_enabled_for_family "$family" && [[ $cn_dns_ok -lt 2 ]]; then
       dns_primary_ok=0
     fi
   fi
@@ -942,7 +1018,7 @@ probe_candidate() {
   else
     base_score=$(score_domain "$success" "$ROUNDS" "$avg_ms" "$tls13" "$verify_ok" "$h2" "$http11" "$http_score" "$ip_count")
     score=$(apply_geo_bonus "$base_score" "$((geo_bonus + cn_dns_bonus))")
-    if [[ $CN_DNS_CHECK -eq 1 && $dns_primary_ok -ne 1 ]]; then
+    if cn_dns_enabled_for_family "$family" && [[ $dns_primary_ok -ne 1 ]]; then
       score=$(cap_score "$score" 89)
     fi
   fi

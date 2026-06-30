@@ -15,7 +15,7 @@ STRICT="${STRICT:-1}"
 GEO_AWARE="${GEO_AWARE:-0}"
 GEO_PREFILTER="${GEO_PREFILTER:-1}"
 GEO_API_TIMEOUT="${GEO_API_TIMEOUT:-2}"
-CN_DNS_CHECK="${CN_DNS_CHECK:-1}"
+CN_DNS_CHECK="${CN_DNS_CHECK:-auto}"
 FULL_TLS_PROBE="${FULL_TLS_PROBE:-0}"
 SKIP_INSTALL=0
 ASSUME_YES=0
@@ -47,7 +47,8 @@ Options:
   --no-geo-prefilter       disable same-region prefiltering
   --geo                    enable source/edge IP region and ASN scoring bonus
   --no-geo                 disable geo scoring, default
-  --no-cn-dns-check        disable mainland public DNS scoring signal
+  --cn-dns-check           force mainland public DNS scoring signal
+  --no-cn-dns-check        disable mainland public DNS scoring signal, default is auto
   --full-tls-probe         also run the older openssl ALPN probe for each candidate
   --no-install             skip dependency installation
   --install-dir DIR        clone/update project in this directory
@@ -390,7 +391,9 @@ run_bench() {
   else
     geo_prefilter_arg=(--no-geo-prefilter)
   fi
-  if [[ ! "$CN_DNS_CHECK" =~ ^(1|true|yes|y)$ ]]; then
+  if [[ "$CN_DNS_CHECK" =~ ^(1|true|yes|y)$ ]]; then
+    cn_dns_arg=(--cn-dns-check)
+  elif [[ "$CN_DNS_CHECK" =~ ^(0|false|no|n|off)$ ]]; then
     cn_dns_arg=(--no-cn-dns-check)
   fi
   if [[ "$FULL_TLS_PROBE" =~ ^(1|true|yes|y)$ ]]; then
@@ -438,6 +441,7 @@ while [[ $# -gt 0 ]]; do
     --no-geo-prefilter) GEO_PREFILTER=0; shift ;;
     --geo) GEO_AWARE=1; shift ;;
     --no-geo) GEO_AWARE=0; shift ;;
+    --cn-dns-check) CN_DNS_CHECK=1; shift ;;
     --no-cn-dns-check) CN_DNS_CHECK=0; shift ;;
     --full-tls-probe) FULL_TLS_PROBE=1; shift ;;
     --no-install) SKIP_INSTALL=1; shift ;;
